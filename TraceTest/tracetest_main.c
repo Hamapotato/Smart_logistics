@@ -89,7 +89,7 @@
 #define TRACE_DIR_LEFT      2
 #define TRACE_DIR_RIGHT     3
 
-#define TRACE_DIR           TRACE_DIR_FRONT
+#define TRACE_DIR           TRACE_DIR_RIGHT
 
 /* 纠偏方向。四块灰阶的安装方向不同，E 的符号可能相反，所以每个方向一个宏，
    互不影响。前灰阶是 2026-10-20 实车确认过的 -1；另外三个第一次上车时标定：
