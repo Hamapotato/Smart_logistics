@@ -1,0 +1,35 @@
+# ---- EIDE / VS Code ----
+/.vscode/launch.json
+/.settings
+/.eide/log
+/.eide.usr.ctx.json
+*.ept
+*.eide-template
+
+# ---- build outputs (Keil / EIDE) ----
+build/
+bin/
+out/
+Obj/
+obj/
+Listings/
+*.o
+*.d
+*.crf
+*.dep
+*.lnp
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.sct
+*.iex
+*.htm
+*.build_log.htm
+*.log
+
+# ---- local backups / per-user Keil layout ----
+*.bak-*
+*.uvguix
+*.uvguix.*
