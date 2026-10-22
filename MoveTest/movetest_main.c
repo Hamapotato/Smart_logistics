@@ -191,7 +191,6 @@ static uint8_t MT_Drive(uint8_t idx, int16_t speed)
     MOTOR_Data[1] = (int8_t)v[1];   /* Motor_202 */
     MOTOR_Data[2] = (int8_t)v[3];   /* Motor_204 */
     MOTOR_Data[3] = (int8_t)v[0];   /* Motor_201 */
-    MOTOR_Data[4] = 0;              /* 抛投臂：本测试一律不动 */
 
     for (r = 0; r < MOVETEST_RETRY; r++) {
         if (I2C_Write_Len(MOTOR_FIXED_SPEED_ADDR, MOTOR_Data, MOTOR_COUNT) == 0)

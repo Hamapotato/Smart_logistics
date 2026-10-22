@@ -1,6 +1,6 @@
 #include "motor.h"
 
-Motor_InitTypeDef Motor_201, Motor_202, Motor_203, Motor_204, Motor_205;
+Motor_InitTypeDef Motor_201, Motor_202, Motor_203, Motor_204;
 int8_t MOTOR_Data[MOTOR_COUNT];
 int8_t MotorEncoderPolarity; // 电机极性控制变量
 uint32_t EncodeTotal[4];      // 用于暂存电机累积转动量的值，正转递增，反转递减
@@ -267,7 +267,6 @@ void MOTOR_CONTROL_DATA_Predit(Motor_InitTypeDef *M1, Motor_InitTypeDef *M2, Mot
     MOTOR_Data[1] = M2->PID_Output;
     MOTOR_Data[2] = M3->PID_Output;
     MOTOR_Data[3] = M4->PID_Output;
-    MOTOR_Data[4] = (int8_t)Motor_205.PID_Output; /* throw arm, channel ARM_CH */
     I2C_Write_Len(MOTOR_FIXED_SPEED_ADDR, MOTOR_Data, MOTOR_COUNT); // 控制电机转动
 }
 

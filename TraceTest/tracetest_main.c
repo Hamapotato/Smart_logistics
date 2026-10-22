@@ -408,7 +408,6 @@ static uint8_t Trace_Send(int16_t m201, int16_t m202, int16_t m203, int16_t m204
     MOTOR_Data[1] = (int8_t)m202;
     MOTOR_Data[2] = (int8_t)m204;
     MOTOR_Data[3] = (int8_t)m201;
-    MOTOR_Data[4] = 0;          /* 抛投臂：本测试一律不动 */
 
     for (r = 0; r < TRACE_RETRY; r++) {
         if (I2C_Write_Len(MOTOR_FIXED_SPEED_ADDR, MOTOR_Data, MOTOR_COUNT) == 0)

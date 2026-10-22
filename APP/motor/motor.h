@@ -15,10 +15,10 @@
 #define MOTOR_ENCODER_TOTAL_ADDR    0x3C // 4个编码电机各自的总脉冲值
 
 /* --------------------------------------------------------------- */
-/* Number of motor channels actually driven on the 0x34 board.
-   Channels 1..4 are the four wheels, channel ARM_CH (5) is the
-   JGB520 throw-arm motor.                                        */
-#define MOTOR_COUNT                 5
+/* Hiwonder 4-channel encoder motor driver.
+   Channels 1..4 drive the four JGB37-520 chassis motors.
+   This board has no fifth motor channel. */
+#define MOTOR_COUNT                 4
 
 /* Register address of ONE channel's encoder total count, so a single
    channel costs 4 bytes instead of 4*ch.  If the board does not
@@ -34,7 +34,7 @@
 #define MOTOR_TYPE_WITHOUT_ENCODER 0 // 无编码器的电机,磁环每转是44个脉冲减速比:90  默认
 #define MOTOR_TYPE_TT              1 // TT编码电机
 #define MOTOR_TYPE_N20             2 // N20编码电机
-#define MOTOR_TYPE_JGB             3 // 磁环每转是44个脉冲   减速比:90  默认
+#define MOTOR_TYPE_JGB             3 // JGB37-520（Hiwonder 官方类型 3）
 
 typedef enum {
     STOP,
@@ -52,7 +52,7 @@ typedef struct
     float PID_Output;
 } Motor_InitTypeDef;
 
-extern Motor_InitTypeDef Motor_201, Motor_202, Motor_203, Motor_204, Motor_205; // 电机结构体
+extern Motor_InitTypeDef Motor_201, Motor_202, Motor_203, Motor_204; // JGB37-520 四轮电机
 extern DIRECTION_MODE Direction;
 
 void IIC_init(void);
