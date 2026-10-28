@@ -21,6 +21,11 @@ STM32F407ZGT6 智慧快递机器人 Keil 工程、测试程序和比赛最终控
 
 说明：[FinalProgram/最终程序说明.md](FinalProgram/最终程序说明.md)
 
+感为 GW 灰度版本：
+
+[FinalProgramGW](FinalProgramGW/FinalProgramGW.uvprojx)  
+说明：[FinalProgramGW/感为版最终程序说明.md](FinalProgramGW/感为版最终程序说明.md)
+
 上电默认红方。在 `TCRT5000` 启动前按 `PD10` 按钮可在红方和蓝方之间切换：
 
 ```text
