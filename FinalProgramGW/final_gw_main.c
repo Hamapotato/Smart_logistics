@@ -76,9 +76,13 @@
 
 /* 右灰阶的左侧两路为黑就提前停车，随后再低速居中。
    左侧两路是探头 1、2，对应 mask 0x03。 */
-#define NODE_STOP_MASK_23           GREY6_STOP_MASK_23
-#define NODE_STOP_MASK_67           GREY6_STOP_MASK_67
+#define NODE_STOP_MASK_12           0x03U
+#define NODE_STOP_MASK_23           0x06U
+#define NODE_STOP_MASK_87           0xC0U
+#define NODE_STOP_MASK_76           0x60U
 #define NODE_ARM_DELAY_TICKS        25
+#define NODE_DEPART_GRACE_TICKS     20U
+#define NODE_SENSOR_READ_RETRY      3U
 
 /* 0 = skip post-stop centering, 1 = keep Node_Center() enabled. */
 #define NODE_POST_STOP_CENTER        0
@@ -118,12 +122,32 @@
 #define FINAL_ROUTE_CAPACITY         (FINAL_MAX_STEPS + 1U)
 #define FINAL_RETURN_WAIT_MAX_MS     5000U
 #define FINAL_RETURN_POLL_MS         200U
-#define FINAL_SERVO_DELIVER_PE5_US   800U
-#define FINAL_SERVO_DELIVER_PE6_US   1700U
-#define FINAL_SERVO_MID_US           1250U
-#define FINAL_SERVO_HOLD_PE5_US      1700U
-#define FINAL_SERVO_HOLD_PE6_US      800U
-#define FINAL_SERVO_STEP_MS          1500U
+/* Base mechanical positions before the placement-direction trim. */
+#define FINAL_SERVO_PE5_DELIVER_BASE_US 800U
+#define FINAL_SERVO_PE5_HOLD_BASE_US    1700U
+#define FINAL_SERVO_PE6_DELIVER_BASE_US 1700U
+#define FINAL_SERVO_PE6_HOLD_BASE_US    800U
+
+/* Shift DELIVER, MID and HOLD together toward the placement action. */
+#define FINAL_SERVO_TOWARD_DELIVER_US   500U
+
+#define FINAL_SERVO_DELIVER_PE5_US \
+    (FINAL_SERVO_PE5_DELIVER_BASE_US - FINAL_SERVO_TOWARD_DELIVER_US)
+#define FINAL_SERVO_HOLD_PE5_US \
+    (FINAL_SERVO_PE5_HOLD_BASE_US - FINAL_SERVO_TOWARD_DELIVER_US)
+#define FINAL_SERVO_MID_PE5_US \
+    (((FINAL_SERVO_PE5_DELIVER_BASE_US + FINAL_SERVO_PE5_HOLD_BASE_US) / 2U) - FINAL_SERVO_TOWARD_DELIVER_US)
+
+#define FINAL_SERVO_DELIVER_PE6_US \
+    (FINAL_SERVO_PE6_DELIVER_BASE_US + FINAL_SERVO_TOWARD_DELIVER_US)
+#define FINAL_SERVO_HOLD_PE6_US \
+    (FINAL_SERVO_PE6_HOLD_BASE_US + FINAL_SERVO_TOWARD_DELIVER_US)
+#define FINAL_SERVO_MID_PE6_US \
+    (((FINAL_SERVO_PE6_DELIVER_BASE_US + FINAL_SERVO_PE6_HOLD_BASE_US) / 2U) + FINAL_SERVO_TOWARD_DELIVER_US)
+
+#define FINAL_SERVO_SAFE_MIN_US        500U
+#define FINAL_SERVO_SAFE_MAX_US        2500U
+#define FINAL_SERVO_STEP_MS            1500U
 
 #define FINAL_SERVO_STATE_DELIVER    0U
 #define FINAL_SERVO_STATE_MID        1U
@@ -204,7 +228,7 @@ static uint8_t Final_Preferred[FINAL_GRID_W][FINAL_GRID_H];
 /* I2C 写入重试次数。 */
 #define NODE_RETRY                  3
 
-/* 感为 GW 数字量：1 表示黑色，0 表示白色。 */
+/* 当前感为 GW 数字量：原始 0 表示黑色，1 表示白色。 */
 #define NODE_BLACK_LEVEL            1
 
 /* 中间两路探头 4、5。 */
@@ -222,18 +246,18 @@ static uint8_t Final_Preferred[FINAL_GRID_W][FINAL_GRID_H];
  *
  * 如果模块安装方向相反，只交换下面两组 mask。
  */
-#define NODE_FRONT_RIGHT_MASK       GREY6_STOP_MASK_23
-#define NODE_FRONT_RIGHT_HALF       0x1E
-#define NODE_FRONT_LEFT_MASK        GREY6_STOP_MASK_67
-#define NODE_FRONT_LEFT_HALF        0x78
+#define NODE_FRONT_RIGHT_MASK       0x03U
+#define NODE_FRONT_RIGHT_HALF       0x0FU
+#define NODE_FRONT_LEFT_MASK        0xC0U
+#define NODE_FRONT_LEFT_HALF        0xF0U
 
 /* 只作用于 Node_Center() 的左右修正，不改变循迹或传感器识别。 */
 #define NODE_CORRECT_LATERAL_SIGN   (-1)
 
-#define NODE_RIGHT_FORWARD_MASK     GREY6_STOP_MASK_23
-#define NODE_RIGHT_FORWARD_HALF     0x1E
-#define NODE_RIGHT_BACK_MASK        GREY6_STOP_MASK_67
-#define NODE_RIGHT_BACK_HALF        0x78
+#define NODE_RIGHT_FORWARD_MASK     0x03U
+#define NODE_RIGHT_FORWARD_HALF     0x0FU
+#define NODE_RIGHT_BACK_MASK        0xC0U
+#define NODE_RIGHT_BACK_HALF        0xF0U
 
 #define NODE_LED_ON                 0
 #define NODE_LED_OFF                1
@@ -334,20 +358,29 @@ static void Node_Stop(void)
 
 static uint8_t Node_ReadFront(uint8_t *raw)
 {
-    return (f_sw_i2c_read_byte(&f_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-         ? 1U : 0U;
+    uint8_t retry;
+    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
+        if (f_sw_i2c_read_byte(&f_i2c_interface, NODE_GW_ADDR8, raw) == 0)
+            return 1U;
+    return 0U;
 }
 
 static uint8_t Node_ReadBack(uint8_t *raw)
 {
-    return (b_sw_i2c_read_byte(&b_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-         ? 1U : 0U;
+    uint8_t retry;
+    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
+        if (b_sw_i2c_read_byte(&b_i2c_interface, NODE_GW_ADDR8, raw) == 0)
+            return 1U;
+    return 0U;
 }
 
 static uint8_t Node_ReadRight(uint8_t *raw)
 {
-    return (r_sw_i2c_read_byte(&r_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-         ? 1U : 0U;
+    uint8_t retry;
+    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
+        if (r_sw_i2c_read_byte(&r_i2c_interface, NODE_GW_ADDR8, raw) == 0)
+            return 1U;
+    return 0U;
 }
 
 static uint8_t Node_Popcount(uint8_t x)
@@ -365,7 +398,7 @@ static uint8_t Node_Transitions(uint8_t x)
 {
     uint8_t t = 0;
     uint8_t i;
-    for (i = 2; i < 7; i++)
+    for (i = 1; i < 8; i++)
     {
         if (((x >> i) & 1U) != ((x >> (i - 1)) & 1U)) t++;
     }
@@ -374,24 +407,27 @@ static uint8_t Node_Transitions(uint8_t x)
 
 static uint8_t Node_Valid(uint8_t raw)
 {
-    uint8_t pc;
-    uint8_t active = (uint8_t)(raw & GREY6_ACTIVE_MASK);
+    uint8_t pc = Node_Popcount(raw);
 
-    pc = Node_Popcount(active);
-    if ((pc == 0) || (pc == GREY6_BLACK_COUNT)) return 0;
-    if (Node_Transitions(active) > 2) return 0;
+    if ((pc == 0) || (pc == 8)) return 0;
+    if (Node_Transitions(raw) > 2) return 0;
     return 1;
 }
 
-/* GW digital data already uses 1 = black, 0 = white. */
+/* Current GW modules report black as 0; normalize to black = 1. */
 static uint8_t Node_GWBits(uint8_t raw)
 {
-    return (uint8_t)(raw & GREY6_ACTIVE_MASK);
+    return (uint8_t)(~raw);
 }
 
 static uint8_t Node_EdgeMask(uint8_t bits)
 {
-    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
+    uint8_t middle = (uint8_t)(bits & 0x18U);
+
+    if (middle != 0x18U) return bits;
+    if ((bits & 0x07U) == 0x07U) return 0U;
+    if ((bits & 0xE0U) == 0xE0U) return 0U;
+    return bits;
 }
 
 /* 返回中间两路是否为黑。 */
@@ -423,7 +459,7 @@ static uint8_t Node_IsCenter(uint8_t front_bits, uint8_t right_raw)
 /* 灰阶连续位置，权重与 TraceTest 相同。 */
 static int16_t Node_LinePos(uint8_t raw)
 {
-    static const int8_t W[8] = { 0, 7, 4, 1, -1, -4, -7, 0 };
+    static const int8_t W[8] = { 6, 4, 3, 1, -1, -3, -4, -6 };
     int16_t pos = 0;
     uint8_t i;
 
@@ -450,14 +486,14 @@ static int16_t Node_Weighted(uint8_t bits, const int8_t weight[8])
 
 static int16_t Node_TrackLat(uint8_t bits, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { 0, +7, +4, +1, -1, -4, -7, 0 };
-    static const int8_t BACK_W[8]  = { 0, +7, +4, +1, -1, -4, -7, 0 };
+    static const int8_t FRONT_W[8] = { +6, +4, +3, +1, -1, -3, -4, -6 };
+    static const int8_t BACK_W[8]  = { +6, +4, +3, +1, -1, -3, -4, -6 };
     return Node_Weighted(bits, back ? BACK_W : FRONT_W);
 }
 
 static int16_t Node_TrackYaw(uint8_t bits)
 {
-    static const int8_t YAW_W[8] = { 0, +7, +4, +1, -1, -4, -7, 0 };
+    static const int8_t YAW_W[8] = { +6, +4, +3, +1, -1, -3, -4, -6 };
     return Node_Weighted(bits, YAW_W);
 }
 
@@ -541,8 +577,11 @@ typedef struct
 
 static uint8_t Node_ReadLeft(uint8_t *raw)
 {
-    return (l_sw_i2c_read_byte(&l_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-         ? 1U : 0U;
+    uint8_t retry;
+    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
+        if (l_sw_i2c_read_byte(&l_i2c_interface, NODE_GW_ADDR8, raw) == 0)
+            return 1U;
+    return 0U;
 }
 
 static uint8_t Node_ReadSensors(NodeSensors *s)
@@ -745,8 +784,10 @@ static int8_t Node_YawSignForMode(uint8_t mode)
 static uint8_t Node_StopPairHit(uint8_t bits)
 {
     return (uint8_t)(
-        (((bits & NODE_STOP_MASK_23) == NODE_STOP_MASK_23)
-      || ((bits & NODE_STOP_MASK_67) == NODE_STOP_MASK_67)));
+        (((bits & NODE_STOP_MASK_12) == NODE_STOP_MASK_12)
+      || ((bits & NODE_STOP_MASK_23) == NODE_STOP_MASK_23)
+      || ((bits & NODE_STOP_MASK_87) == NODE_STOP_MASK_87)
+      || ((bits & NODE_STOP_MASK_76) == NODE_STOP_MASK_76)));
 }
 
 static uint8_t Node_Travel(uint8_t mode)
@@ -772,7 +813,8 @@ static uint8_t Node_Travel(uint8_t mode)
         if ((read_ok & need_read) != need_read)
         {
             Node_Stop();
-            return 0;
+            delay_ms(NODE_TICK_MS);
+            continue;
         }
 
         if (tick >= NODE_ARM_DELAY_TICKS) node_armed = 1;
@@ -815,7 +857,25 @@ static uint8_t Node_Travel(uint8_t mode)
         Node_GetPoseTravel(&s, &p, mode);
         if (p.valid_count == 0)
         {
-            Node_Stop();
+            if (tick < NODE_DEPART_GRACE_TICKS)
+            {
+                vx = 0;
+                vy = 0;
+                w = 0;
+                if (mode == NODE_MODE_FORWARD) vx = NODE_CRUISE;
+                else if (mode == NODE_MODE_BACK) vx = -NODE_CRUISE;
+                else if (mode == NODE_MODE_LEFT) vy = NODE_CRUISE;
+                else if (mode == NODE_MODE_RIGHT) vy = -NODE_CRUISE;
+                if (Node_MoveVectorW(vx, vy, w))
+                {
+                    Node_Stop();
+                    return 0;
+                }
+            }
+            else
+            {
+                Node_Stop();
+            }
             delay_ms(NODE_TICK_MS);
             continue;
         }
@@ -1239,8 +1299,8 @@ static int8_t Final_FindRouteIndex(const uint8_t *route_x,
 
 static uint16_t Final_ServoClamp(uint16_t pulse)
 {
-    if (pulse < FINAL_SERVO_DELIVER_PE5_US) return FINAL_SERVO_DELIVER_PE5_US;
-    if (pulse > FINAL_SERVO_HOLD_PE5_US) return FINAL_SERVO_HOLD_PE5_US;
+    if (pulse < FINAL_SERVO_SAFE_MIN_US) return FINAL_SERVO_SAFE_MIN_US;
+    if (pulse > FINAL_SERVO_SAFE_MAX_US) return FINAL_SERVO_SAFE_MAX_US;
     return pulse;
 }
 
@@ -1259,7 +1319,8 @@ static void Final_ServoApplyState(uint8_t state)
     }
     else if (state == FINAL_SERVO_STATE_MID)
     {
-        Final_ServoSetPulses(FINAL_SERVO_MID_US, FINAL_SERVO_MID_US);
+        Final_ServoSetPulses(FINAL_SERVO_MID_PE5_US,
+                             FINAL_SERVO_MID_PE6_US);
     }
     else
     {
@@ -1330,7 +1391,7 @@ static void Final_ServoInit(void)
     TIM_OCStructInit(&oc);
     oc.TIM_OCMode      = TIM_OCMode_PWM1;
     oc.TIM_OutputState = TIM_OutputState_Enable;
-    oc.TIM_Pulse       = FINAL_SERVO_MID_US;
+    oc.TIM_Pulse       = FINAL_SERVO_MID_PE5_US;
     oc.TIM_OCPolarity  = TIM_OCPolarity_High;
     TIM_OC1Init(TIM9, &oc);
     TIM_OC1PreloadConfig(TIM9, TIM_OCPreload_Enable);

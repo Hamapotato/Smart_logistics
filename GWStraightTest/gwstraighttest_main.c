@@ -24,7 +24,7 @@
  *   转弯权重：
  *       前/后：+4,+3,+2,+1,-1,-2,-3,-4
  *
- *   E_LAT = 前平移权重和 + 后平移权重和
+ *   E_LAT = 前平移权重和 - 后平移权重和
  *   E_YAW = 前转弯权重和 + 后转弯权重和
  *
  *   例如：
@@ -65,7 +65,7 @@
 #define STRAIGHT_DEBUG              1
 #define STRAIGHT_PRINT_EVERY        25
 #define STRAIGHT_TUBE_EVERY         5
-#define STRAIGHT_GW_BLACK_LEVEL     1
+#define STRAIGHT_GW_BLACK_LEVEL     0
 
 #define STRAIGHT_LED_ON             0
 #define STRAIGHT_LED_OFF            1
@@ -73,8 +73,6 @@
 /* 前/后灰阶底层接口。 */
 extern sw_i2c_interface_t f_i2c_interface;
 extern sw_i2c_interface_t b_i2c_interface;
-extern int8_t f_sw_i2c_read_byte(sw_i2c_interface_t *,
-                                 uint8_t, uint8_t *);
 extern int8_t f_sw_i2c_read_byte(sw_i2c_interface_t *,
                                  uint8_t, uint8_t *);
 extern int8_t b_sw_i2c_read_byte(sw_i2c_interface_t *,
@@ -169,9 +167,9 @@ static uint8_t Straight_ReadFront(uint8_t *raw)
 static uint8_t Straight_GWBits(uint8_t raw)
 {
 #if STRAIGHT_GW_BLACK_LEVEL
-    return (uint8_t)(raw & GREY6_ACTIVE_MASK);
+    return raw;
 #else
-    return (uint8_t)((~raw) & GREY6_ACTIVE_MASK);
+    return (uint8_t)(~raw);
 #endif
 }
 
@@ -189,7 +187,12 @@ static uint8_t Straight_BackBits(uint8_t raw)
    123+45 -> no correction, or 678+45 -> no correction. */
 static uint8_t Straight_EdgeMask(uint8_t bits)
 {
-    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
+    uint8_t middle = (uint8_t)(bits & 0x18U);
+
+    if (middle != 0x18U) return bits;
+    if ((bits & 0x07U) == 0x07U) return 0U;
+    if ((bits & 0xE0U) == 0xE0U) return 0U;
+    return bits;
 }
 
 /* Show black front channels, ch1=leftmost through ch8=rightmost.
@@ -228,7 +231,7 @@ static uint8_t Straight_ReadBack(uint8_t *raw)
 /* 用户规则：八路全 0 或全 1 都认为该传感器本周期不可信。 */
 static uint8_t Straight_Valid(uint8_t raw)
 {
-    return ((raw != 0x00U) && (raw != GREY6_ACTIVE_MASK)) ? 1U : 0U;
+    return ((raw != 0x00U) && (raw != 0xFFU)) ? 1U : 0U;
 }
 
 static int16_t Straight_Weighted(uint8_t raw, const int8_t w[8])
@@ -248,8 +251,8 @@ static int16_t Straight_Weighted(uint8_t raw, const int8_t w[8])
    前后统一按 1~4 左、5~8 右解释。 */
 static int16_t Straight_Lat(uint8_t raw, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
-    static const int8_t BACK_W[8]  = { 0, +8, +5, +1, -1, -5, -8, 0 };
+    static const int8_t FRONT_W[8] = { +6, +4, +3, +1, -1, -3, -4, -6 };
+    static const int8_t BACK_W[8]  = { +6, +4, +3, +1, -1, -3, -4, -6 };
     return Straight_Weighted(raw, back ? BACK_W : FRONT_W);
 }
 
@@ -257,7 +260,7 @@ static int16_t Straight_Lat(uint8_t raw, uint8_t back)
    组合后前1/后1、前8/后8都得到同一个方向的转角误差。 */
 static int16_t Straight_Yaw(uint8_t raw)
 {
-    static const int8_t YAW_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
+    static const int8_t YAW_W[8] = { +6, +4, +3, +1, -1, -3, -4, -6 };
     return Straight_Weighted(raw, YAW_W);
 }
 
@@ -369,8 +372,8 @@ int main(void)
 
             if (front_ok && back_ok)
             {
-                /* 每个探头权重先分别累加，再把前后两路相加。 */
-                e_lat = (int16_t)(front_e + back_e);
+                /* 前后模块横向方向镜像：平移相减，旋转相加。 */
+                e_lat = (int16_t)(front_e - back_e);
                 e_yaw = (int16_t)(Straight_Yaw(front_ctrl_bits)
                                 + Straight_Yaw(back_ctrl_bits));
             }
