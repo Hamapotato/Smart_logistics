@@ -89,7 +89,23 @@
 #define TRACE_DIR_LEFT      2
 #define TRACE_DIR_RIGHT     3
 
-#define TRACE_DIR           TRACE_DIR_RIGHT
+#define TRACE_DIR           TRACE_DIR_FRONT
+
+/* 1 = front uses Yahboom YB-MUX04-2.0 I2C; 0 = old GW module. */
+#define TRACE_FRONT_USE_YB 1
+
+/* YB-MUX04 X1..X8 are opposite to the weight table, so reverse the byte. */
+#define TRACE_YB_REVERSE_RAW 1
+
+/* YB-MUX04 command/register that returns one digital-state byte. */
+#define TRACE_YB_STATE_CMD 0x01
+
+
+/* Start as soon as the selected sensor returns a valid line. */
+#define TRACE_START_STABLE 1
+
+/* Drive wheels enabled for normal line-following operation. */
+#define TRACE_MOTOR_ENABLE 1
 
 /* 纠偏方向。四块灰阶的安装方向不同，E 的符号可能相反，所以每个方向一个宏，
    互不影响。前灰阶是 2026-10-20 实车确认过的 -1；另外三个第一次上车时标定：
@@ -124,8 +140,12 @@
 /* 每多少个周期打一行串口（25 × 20ms = 500ms）。打印是阻塞的，别打太勤。 */
 #define TRACE_PRINT_EVERY   25
 
+/* Refresh the four-digit display every 5 control frames (100 ms). */
+#define TRACE_TUBE_EVERY    5
+
 /* 灰阶数字量里"黑"对应的 bit 值（0 或 1）。只给路口判据用，见文件头。 */
-#define TRACE_BLACK_LEVEL   0
+#define TRACE_BLACK_LEVEL_GW       0
+#define TRACE_BLACK_LEVEL_ACTIVE_HIGH 1
 
 /* 1 = 串口输出过程；0 = 串口完全不出声（LED 照常）。 */
 #define TRACE_DEBUG         1
@@ -172,12 +192,24 @@ extern void I2C_SDA_IN(void);
    而它把 read_byte 的返回值丢掉了：I2C 一失败就返回**没初始化的局部变量**，
    那是个看着合法的垃圾值，拿它开电机会出事。这里直接用带返回值的版本。 */
 #if   (TRACE_DIR == TRACE_DIR_FRONT)
+#if   TRACE_FRONT_USE_YB
+extern sw_i2c_interface_t f_i2c_interface;
+extern void f_sw_i2c_init(void);
+extern int8_t f_sw_i2c_mem_read(sw_i2c_interface_t *, uint8_t, uint8_t, uint8_t *, uint8_t);
+  #define TRACE_SENSOR_INIT() f_sw_i2c_init()
+  #define TRACE_SENSOR_NAME   "Yahboom YB-MUX04-2.0 front PB13/PB14"
+  #define TRACE_SENSOR_ADDR_TEXT "0x12"
+  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
+#else
 extern sw_i2c_interface_t f_i2c_interface;
 extern int8_t f_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
   #define TRACE_I2C_IF        f_i2c_interface
   #define TRACE_I2C_READ      f_sw_i2c_read_byte
   #define TRACE_SENSOR_INIT() F_GW_digital_Init()
   #define TRACE_SENSOR_NAME   "front PB13/PB14"
+  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
+  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
+#endif
 #elif (TRACE_DIR == TRACE_DIR_BACK)
 extern sw_i2c_interface_t b_i2c_interface;
 extern int8_t b_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
@@ -185,6 +217,8 @@ extern int8_t b_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
   #define TRACE_I2C_READ      b_sw_i2c_read_byte
   #define TRACE_SENSOR_INIT() B_GW_digital_Init()
   #define TRACE_SENSOR_NAME   "back PD1/PD2"
+  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
+  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
 #elif (TRACE_DIR == TRACE_DIR_LEFT)
 extern sw_i2c_interface_t l_i2c_interface;
 extern int8_t l_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
@@ -192,6 +226,8 @@ extern int8_t l_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
   #define TRACE_I2C_READ      l_sw_i2c_read_byte
   #define TRACE_SENSOR_INIT() L_GW_digital_Init()
   #define TRACE_SENSOR_NAME   "left PC8/PC9"
+  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
+  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
 #else /* TRACE_DIR_RIGHT */
 extern sw_i2c_interface_t r_i2c_interface;
 extern int8_t r_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
@@ -199,10 +235,16 @@ extern int8_t r_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
   #define TRACE_I2C_READ      r_sw_i2c_read_byte
   #define TRACE_SENSOR_INIT() R_GW_digital_Init()
   #define TRACE_SENSOR_NAME   "right PC3/PC2"
+  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
+  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
 #endif
 
 /* 0x4F 是 7 位地址，软 I2C 收发用的是 8 位形式，要左移一位。 */
 #define TRACE_GW_ADDR8      ((uint8_t)(GW_GRAY_ADDR_DEF << 1))
+
+/* YB-MUX04-2.0 responds at 7-bit I2C address 0x12. */
+#define TRACE_YB_ADDR_DEF 0x12
+#define TRACE_YB_ADDR8    ((uint8_t)(TRACE_YB_ADDR_DEF << 1))
 
 /* ---------------------------------------------------------------------------
  *  三、为了过链接必须留着的 reverse()
@@ -309,15 +351,60 @@ static uint8_t Trace_Blob(uint8_t raw)
     return 0;
 }
 
+/* YB-MUX04 channel bits are shifted by one position. */
+static uint8_t Trace_YB_MapChannels(uint8_t raw)
+{
+    return (uint8_t)((raw >> 1) | (raw << 7));
+}
+
 /* 读一次选中的灰阶。返回 1 = I2C 成功，0 = 失败（*raw 不改）。 */
 static uint8_t Trace_ReadRaw(uint8_t *raw)
 {
     uint8_t v = 0xFF;
 
+#if   (TRACE_DIR == TRACE_DIR_FRONT) && TRACE_FRONT_USE_YB
+    if (f_sw_i2c_mem_read(&f_i2c_interface, TRACE_YB_ADDR8,
+                          TRACE_YB_STATE_CMD, &v, 1) != 0) {
+        *raw = 0xFF;
+        return 0;
+    }
+#if   TRACE_YB_REVERSE_RAW
+    v = reverse(v);
+#endif
+    v = Trace_YB_MapChannels(v);
+#else
     if (TRACE_I2C_READ(&TRACE_I2C_IF, TRACE_GW_ADDR8, &v) != 0) return 0;
+#endif
 
     *raw = v;
     return 1;
+}
+
+/* raw bit0..bit7 = physical leftmost ch1..rightmost ch8.
+   Show up to four black-channel numbers, right aligned. Clear if none/error/more than four. */
+static void Trace_ShowBlackChannels(uint8_t raw, uint8_t read_ok)
+{
+    unsigned char digits[4] = {10, 10, 10, 10};
+    uint8_t ch;
+    uint8_t count = 0;
+    uint8_t pos;
+
+    if (read_ok) {
+        for (ch = 0; ch < 8; ch++) {
+            if ((uint8_t)((raw >> ch) & 1u) == TRACE_BLACK_LEVEL) count++;
+        }
+    }
+
+    if ((count > 0) && (count <= 4)) {
+        pos = (uint8_t)(4 - count);
+        for (ch = 0; ch < 8; ch++) {
+            if ((uint8_t)((raw >> ch) & 1u) == TRACE_BLACK_LEVEL) {
+                digits[pos++] = (unsigned char)(ch + 1);
+            }
+        }
+    }
+
+    TUBES_DisplayDigits(digits);
 }
 
 /* ---------------------------------------------------------------------------
@@ -481,6 +568,9 @@ int main(void)
     SysTick_Init(168);              /* delay_us / delay_ms 要用，必须最先做 */
     LED_Init();
     USART1_Init(19200);
+    TUBES_Driver_Init();
+    TUBES_SetBrightness(6);
+    TUBES_Clear();
 
     LED_RED   = TRACE_LED_OFF;
     LED_GREEN = TRACE_LED_OFF;
@@ -488,20 +578,20 @@ int main(void)
     MOTOR_Init();
     delay_ms(5);
 
-    /* 上电第一件事：先让四个轮子停下，并且检查这次写有没有成功。
-       不检查的话，一旦这次写丢了，板子会保持上次的转速 —— 上电就是"自己往前跑"。 */
+    /* 上电第一件事：先让四个轮子停下，并且检查这次写有没有成功。 */
     for (i = 0; i < 3; i++) {
         if (Trace_Send(0, 0, 0, 0) == 0) break;
         delay_ms(50);
     }
 
-    /* 只初始化选中的那一块。里面会 PING + 扫描地址 + 切开关量模式。 */
     TRACE_SENSOR_INIT();
-    delay_ms(100);
+    delay_ms(300);
 
 #if TRACE_DEBUG
     printf("\r\n== TraceTest (%s line following) ==\r\n", TRACE_DIR_NAME);
-    printf("TraceTest: dir=%s  sensor=%s @0x4F\r\n", TRACE_DIR_NAME, TRACE_SENSOR_NAME);
+    printf("TraceTest: dir=%s sensor=%s addr=%s black=%d\r\n",
+           TRACE_DIR_NAME, TRACE_SENSOR_NAME, TRACE_SENSOR_ADDR_TEXT,
+           (int)TRACE_BLACK_LEVEL);
     printf("TraceTest: cruise=%d  k=%d/8  max=%d  deadband=%d  sign_yaw=%d\r\n",
            (int)TRACE_CRUISE, (int)TRACE_K, (int)TRACE_MAX,
            (int)TRACE_DEADBAND, (int)TRACE_SIGN_YAW);
@@ -513,12 +603,13 @@ int main(void)
     for (;;) {
         /* ---------- 1. 读选中的灰阶 ---------- */
         ok = Trace_ReadRaw(&raw);
+        if ((tick % TRACE_TUBE_EVERY) == 0) {
+            Trace_ShowBlackChannels(raw, ok);
+        }
         if (ok) ok = Trace_Valid(raw);
 
         /* ---------- 2. 算纠偏 ---------- */
-        if (!started) {
-            if (ok) started = 1;    /* 第一次看到线才允许起步 */
-        }
+        if (!started && ok) started = 1;
 
         if (!started) {
             /* 还没见过线：停在原地等，别上电就闷头往前开 */
@@ -557,12 +648,18 @@ int main(void)
             }
         }
 
+#if !TRACE_MOTOR_ENABLE
+        vx = 0;
+        w = 0;
+        lamp = TRACE_LAMP_STOP;
+#endif
+
         /* ---------- 3. 混成四个轮速 ---------- */
         Trace_Mix(vx, w, &m201, &m202, &m203, &m204);
 
-        /* ---------- 4. 下发 ---------- */
+        /* ---------- 4. 下发给四个轮子 ---------- */
         if (Trace_Send(m201, m202, m203, m204) != 0) {
-            io_err_ticks = 40;          /* 故障灯至少亮 40 个周期（800ms） */
+            io_err_ticks = 40;
         }
         if (io_err_ticks > 0) {
             io_err_ticks--;
@@ -574,9 +671,9 @@ int main(void)
 
 #if TRACE_DEBUG
         if ((tick % TRACE_PRINT_EVERY) == 0) {
-            printf("Trace[%s]: raw %02X E %3d w %2d | m201 %3d m202 %3d m203 %3d m204 %3d | %s\r\n",
+            printf("Trace[%s]: raw %02X ok %d E %3d w %2d | m201 %3d m202 %3d m203 %3d m204 %3d | %s\r\n",
                    TRACE_DIR_NAME,
-                   (unsigned int)raw, (int)e, (int)w,
+                   (unsigned int)raw, (int)ok, (int)e, (int)w,
                    (int)m201, (int)m202, (int)m203, (int)m204,
                    (lamp == TRACE_LAMP_LOCK)    ? "LOCK"  :
                    (lamp == TRACE_LAMP_CORRECT) ? "CORR"  :

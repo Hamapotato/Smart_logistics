@@ -33,3 +33,6 @@ Listings/
 *.bak-*
 *.uvguix
 *.uvguix.*
+
+# ---- local Codex helper scripts ----
+.codex_*.py
