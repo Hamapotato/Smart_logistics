@@ -10,7 +10,7 @@
  *   左、右两块灰阶完全不初始化、不读取。
  *
  * 【有效数据规则】
- *   单块灰阶 raw == 0x00 或 raw == 0xFF 时，认为八路全同、数据不可信，
+ *   前后灰阶只使用 L2-L7；六路全白 0x00 或全黑 0x7E 时判为不可信，
  *   本周期忽略该传感器。两块都不可信时停车，不驱动电机。
  *
  * 【位姿计算】
@@ -169,9 +169,9 @@ static uint8_t Straight_ReadFront(uint8_t *raw)
 static uint8_t Straight_GWBits(uint8_t raw)
 {
 #if STRAIGHT_GW_BLACK_LEVEL
-    return raw;
+    return (uint8_t)(raw & GREY6_ACTIVE_MASK);
 #else
-    return (uint8_t)(~raw);
+    return (uint8_t)((~raw) & GREY6_ACTIVE_MASK);
 #endif
 }
 
@@ -189,11 +189,7 @@ static uint8_t Straight_BackBits(uint8_t raw)
    123+45 -> no correction, or 678+45 -> no correction. */
 static uint8_t Straight_EdgeMask(uint8_t bits)
 {
-    uint8_t middle = (uint8_t)(bits & 0x18U);
-    if (middle != 0x18U) return bits;
-    if ((bits & 0x07U) == 0x07U) return 0;
-    if ((bits & 0xE0U) == 0xE0U) return 0;
-    return bits;
+    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
 }
 
 /* Show black front channels, ch1=leftmost through ch8=rightmost.
@@ -232,7 +228,7 @@ static uint8_t Straight_ReadBack(uint8_t *raw)
 /* 用户规则：八路全 0 或全 1 都认为该传感器本周期不可信。 */
 static uint8_t Straight_Valid(uint8_t raw)
 {
-    return ((raw != 0x00U) && (raw != 0xFFU)) ? 1U : 0U;
+    return ((raw != 0x00U) && (raw != GREY6_ACTIVE_MASK)) ? 1U : 0U;
 }
 
 static int16_t Straight_Weighted(uint8_t raw, const int8_t w[8])
@@ -252,8 +248,8 @@ static int16_t Straight_Weighted(uint8_t raw, const int8_t w[8])
    前后统一按 1~4 左、5~8 右解释。 */
 static int16_t Straight_Lat(uint8_t raw, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { +4, +3, +2, 0, 0, -2, -3, -4 };
-    static const int8_t BACK_W[8]  = { +4, +3, +2, 0, 0, -2, -3, -4 };
+    static const int8_t FRONT_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
+    static const int8_t BACK_W[8]  = { 0, +8, +5, +1, -1, -5, -8, 0 };
     return Straight_Weighted(raw, back ? BACK_W : FRONT_W);
 }
 
@@ -261,7 +257,7 @@ static int16_t Straight_Lat(uint8_t raw, uint8_t back)
    组合后前1/后1、前8/后8都得到同一个方向的转角误差。 */
 static int16_t Straight_Yaw(uint8_t raw)
 {
-    static const int8_t YAW_W[8] = { +4, +3, +2, +1, -1, -2, -3, -4 };
+    static const int8_t YAW_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
     return Straight_Weighted(raw, YAW_W);
 }
 

@@ -22,7 +22,6 @@
 #include "sensor.h"
 #include "imu.h"
 #include "imu_driver.h"
-#include "yysb.h"
 
 
 #define GREY_SENSOR_LIMITED 3

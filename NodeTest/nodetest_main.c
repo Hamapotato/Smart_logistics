@@ -17,7 +17,7 @@
  *   后：PD1 =SCL，PD2 =SDA
  *   左：PC8 =SCL，PC9 =SDA
  *   右：PC3 =SCL，PC2 =SDA
- *   四块均为亚博 YB-MUX04-2.0，地址 0x12，命令 0x01。
+ *   四块均为亚博 YB-MUX04-2.0，地址 0x12，数据寄存器 0x30。
  * ========================================================================== */
 
 #include "main.h"
@@ -68,8 +68,8 @@
 
 /* 右灰阶的左侧两路为黑就提前停车，随后再低速居中。
    左侧两路是探头 1、2，对应 mask 0x03。 */
-#define NODE_STOP_LOW_MASK          0x03
-#define NODE_STOP_HIGH_MASK         0xC0
+#define NODE_STOP_LOW_MASK          GREY6_STOP_MASK_23
+#define NODE_STOP_HIGH_MASK         GREY6_STOP_MASK_67
 #define NODE_ARM_DELAY_TICKS        25
 
 /* 0 = skip post-stop centering, 1 = keep Node_Center() enabled. */
@@ -144,18 +144,18 @@ static const uint8_t NODE_TASK_MODES[NODE_TASK_COUNT] =
  *
  * 如果模块安装方向相反，只交换下面两组 mask。
  */
-#define NODE_FRONT_RIGHT_MASK       0x03
-#define NODE_FRONT_RIGHT_HALF       0x0F
-#define NODE_FRONT_LEFT_MASK        0xC0
-#define NODE_FRONT_LEFT_HALF        0xF0
+#define NODE_FRONT_RIGHT_MASK       GREY6_STOP_MASK_23
+#define NODE_FRONT_RIGHT_HALF       0x1E
+#define NODE_FRONT_LEFT_MASK        GREY6_STOP_MASK_67
+#define NODE_FRONT_LEFT_HALF        0x78
 
 /* 只作用于 Node_Center() 的左右修正，不改变循迹或传感器识别。 */
 #define NODE_CORRECT_LATERAL_SIGN   (-1)
 
-#define NODE_RIGHT_FORWARD_MASK     0x03
-#define NODE_RIGHT_FORWARD_HALF     0x0F
-#define NODE_RIGHT_BACK_MASK        0xC0
-#define NODE_RIGHT_BACK_HALF        0xF0
+#define NODE_RIGHT_FORWARD_MASK     GREY6_STOP_MASK_23
+#define NODE_RIGHT_FORWARD_HALF     0x1E
+#define NODE_RIGHT_BACK_MASK        GREY6_STOP_MASK_67
+#define NODE_RIGHT_BACK_HALF        0x78
 
 #define NODE_LED_ON                 0
 #define NODE_LED_OFF                1
@@ -182,7 +182,7 @@ extern void r_sw_i2c_init(void);
 
 #define NODE_YB_ADDR_DEF 0x12
 #define NODE_YB_ADDR8    ((uint8_t)(NODE_YB_ADDR_DEF << 1))
-#define NODE_YB_STATE_CMD 0x01
+#define NODE_YB_STATE_CMD 0x30U
 
 uint8_t reverse(uint8_t x);
 
@@ -302,7 +302,7 @@ static uint8_t Node_Transitions(uint8_t x)
 {
     uint8_t t = 0;
     uint8_t i;
-    for (i = 1; i < 8; i++)
+    for (i = 2; i < 7; i++)
     {
         if (((x >> i) & 1U) != ((x >> (i - 1)) & 1U)) t++;
     }
@@ -311,9 +311,12 @@ static uint8_t Node_Transitions(uint8_t x)
 
 static uint8_t Node_Valid(uint8_t raw)
 {
-    uint8_t pc = Node_Popcount(raw);
-    if ((pc == 0) || (pc == 8)) return 0;
-    if (Node_Transitions(raw) > 2) return 0;
+    uint8_t pc;
+    uint8_t active = (uint8_t)(raw & GREY6_ACTIVE_MASK);
+
+    pc = Node_Popcount(active);
+    if ((pc == 0) || (pc == GREY6_BLACK_COUNT)) return 0;
+    if (Node_Transitions(active) > 2) return 0;
     return 1;
 }
 
@@ -322,16 +325,12 @@ static uint8_t Node_YBBits(uint8_t raw)
 {
     uint8_t v = reverse(raw);
     v = (uint8_t)((v >> 1) | (v << 7));
-    return (uint8_t)(~v);
+    return (uint8_t)((~v) & GREY6_ACTIVE_MASK);
 }
 
 static uint8_t Node_EdgeMask(uint8_t bits)
 {
-    uint8_t middle = (uint8_t)(bits & 0x18U);
-    if (middle != 0x18U) return bits;
-    if ((bits & 0x07U) == 0x07U) return 0;
-    if ((bits & 0xE0U) == 0xE0U) return 0;
-    return bits;
+    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
 }
 
 /* 返回中间两路是否为黑。 */
@@ -363,7 +362,7 @@ static uint8_t Node_IsCenter(uint8_t front_bits, uint8_t right_raw)
 /* 灰阶连续位置，权重与 TraceTest 相同。 */
 static int16_t Node_LinePos(uint8_t raw)
 {
-    static const int8_t W[8] = { 6, 4, 2, 1, -1, -2, -4, -6 };
+    static const int8_t W[8] = { 0, 8, 5, 1, -1, -5, -8, 0 };
     int16_t pos = 0;
     uint8_t i;
 
@@ -390,14 +389,14 @@ static int16_t Node_Weighted(uint8_t bits, const int8_t weight[8])
 
 static int16_t Node_TrackLat(uint8_t bits, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { +8, +5, +2, +1, -1, -2, -5, -8 };
-    static const int8_t BACK_W[8]  = { +8, +5, +2, +1, -1, -2, -5, -8 };
+    static const int8_t FRONT_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
+    static const int8_t BACK_W[8]  = { 0, +8, +5, +1, -1, -5, -8, 0 };
     return Node_Weighted(bits, back ? BACK_W : FRONT_W);
 }
 
 static int16_t Node_TrackYaw(uint8_t bits)
 {
-    static const int8_t YAW_W[8] = { +8, +5, +2, +1, -1, -2, -5, -8 };
+    static const int8_t YAW_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
     return Node_Weighted(bits, YAW_W);
 }
 

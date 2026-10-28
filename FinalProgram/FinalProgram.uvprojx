@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>STM32F40_41xxx,USE_STDPERIPH_DRIVER</Define>
               <Undefine></Undefine>
-              <IncludePath>..\User;..\Libraries\CMSIS;..\Libraries\STM32F4xx_StdPeriph_Driver\inc;..\APP\led;..\Public;..\APP\usart;..\APP\DIGITAL_TUBES;..\APP\kalman;..\APP\key;..\APP\motor;..\APP\move;..\APP\OLED;..\APP\pid;..\APP\plan;..\APP\sensor;..\APP\steering;..\APP\trace;..\APP\VOFA;..\APP\MPU9250;..\APP\MPU9250_Driver;..\APP\yysb</IncludePath>
+              <IncludePath>..\User;..\Libraries\CMSIS;..\Libraries\STM32F4xx_StdPeriph_Driver\inc;..\APP\led;..\Public;..\APP\usart;..\APP\DIGITAL_TUBES;..\APP\kalman;..\APP\key;..\APP\motor;..\APP\move;..\APP\OLED;..\APP\pid;..\APP\plan;..\APP\sensor;..\APP\steering;..\APP\trace;..\APP\VOFA;..\APP\MPU9250;..\APP\MPU9250_Driver</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>

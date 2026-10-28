@@ -66,7 +66,7 @@
 
 #define TEST_YB_ADDR_DEF            0x12
 #define TEST_YB_ADDR8               ((uint8_t)(TEST_YB_ADDR_DEF << 1))
-#define TEST_YB_STATE_CMD           0x01
+#define TEST_YB_STATE_CMD           0x30U
 
 extern sw_i2c_interface_t f_i2c_interface;
 extern sw_i2c_interface_t b_i2c_interface;
@@ -157,7 +157,7 @@ static uint8_t Test_YBBits(uint8_t raw)
 {
     uint8_t v = reverse(raw);
     v = (uint8_t)((v >> 1) | (v << 7));
-    return (uint8_t)(~v);
+    return (uint8_t)((~v) & GREY6_ACTIVE_MASK);
 }
 
 static uint8_t Test_Valid(uint8_t bits)
@@ -165,17 +165,18 @@ static uint8_t Test_Valid(uint8_t bits)
     uint8_t count = 0;
     uint8_t transitions = 0;
     uint8_t i;
-    uint8_t v = bits;
+    uint8_t v = (uint8_t)(bits & GREY6_ACTIVE_MASK);
+    uint8_t active = v;
 
     while (v) {
         count = (uint8_t)(count + (v & 1U));
         v = (uint8_t)(v >> 1);
     }
-    if ((count == 0) || (count == 8)) return 0;
+    if ((count == 0) || (count == GREY6_BLACK_COUNT)) return 0;
 
-    for (i = 1; i < 8; i++)
+    for (i = 2; i < 7; i++)
     {
-        if (((bits >> i) & 1U) != ((bits >> (i - 1)) & 1U))
+        if (((active >> i) & 1U) != ((active >> (i - 1)) & 1U))
             transitions++;
     }
     return (transitions <= 2) ? 1U : 0U;
@@ -183,12 +184,7 @@ static uint8_t Test_Valid(uint8_t bits)
 
 static uint8_t Test_EdgeMask(uint8_t bits)
 {
-    uint8_t middle = (uint8_t)(bits & 0x18U);
-
-    if (middle != 0x18U) return bits;
-    if ((bits & 0x07U) == 0x07U) return 0;
-    if ((bits & 0xE0U) == 0xE0U) return 0;
-    return bits;
+    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
 }
 
 static int16_t Test_Weighted(uint8_t bits, const int8_t weight[8])
@@ -275,8 +271,8 @@ int main(void)
     int16_t vx;
     int16_t vy;
     int16_t w;
-    static const int8_t POS_W[8] = { +8, +5, +2, +1, -1, -2, -5, -8 };
-    static const int8_t YAW_W[8] = { +8, +5, +2, +1, -1, -2, -5, -8 };
+    static const int8_t POS_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
+    static const int8_t YAW_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
 
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
     SysTick_Init(168);

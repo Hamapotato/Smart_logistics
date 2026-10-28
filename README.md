@@ -7,25 +7,31 @@ STM32F407ZGT6 智慧快递机器人 Keil 工程、测试程序和比赛最终控
 [FinalProgram](FinalProgram/FinalProgram.uvprojx) 是当前整合版比赛程序，包含：
 
 - 8×5 节点矩形网格上的 BFS 路径规划；
+- `PD12` 上的 TCRT5000 唯一启动控制，不使用语音启动；
 - 红方、蓝方起点和终点切换；
 - IRTest 八路红外障碍检测；
 - NodeTest 四方向循迹、节点停车和反向制动；
 - 去程实际路线记录；
-- 终点投递任务占位；
+- 去程和返程都不驱动舵机；到终点后才启动双舵机投递，序列结束后释放舵机；
 - 原路优先返程，遇到其他车辆时等待、标记固定障碍并重新 BFS。
+
+> 当前源码启用了 `FINAL_FORWARD_ONLY_TEST = 0`，
+> `FINAL_FORWARD_TRANSLATION_ENABLE = 1`、`FINAL_FORWARD_YAW_ENABLE = 1`，
+> 运行完整流程，包括 BFS、红外、四方向移动、停车、双舵机投递和返程。
 
 说明：[FinalProgram/最终程序说明.md](FinalProgram/最终程序说明.md)
 
-源码顶部通过宏切换队伍：
+上电默认红方。在 `TCRT5000` 启动前按 `PD10` 按钮可在红方和蓝方之间切换：
 
-```c
-#define FINAL_TEAM FINAL_TEAM_RED
+```text
+红方：数码管 0000
+蓝方：数码管 1111
+启动后：数码管 1234
 ```
-
-蓝方改为 `FINAL_TEAM_BLUE`。
 
 ## 场地与硬件资料
 
+- [六路巡线规则](六路巡线规则.md)
 - [场地网格与四角巡线理解](场地网格与四角巡线理解.md)
 - [接线清单](接线清单.md)
 - [硬件清单](硬件清单.md)
@@ -46,7 +52,8 @@ STM32F407ZGT6 智慧快递机器人 Keil 工程、测试程序和比赛最终控
 | [FourDirStraightTest](FourDirStraightTest/FourDirStraightTest.uvprojx) | 四方向单轴直行与纠偏开关 | [说明](FourDirStraightTest/四方向直行测试说明.md) |
 | [GWStraightTest](GWStraightTest/GWStraightTest.uvprojx) | GW 双灰度直行 | [说明](GWStraightTest/GW直行测试说明.md) |
 | [NodeTest](NodeTest/NodeTest.uvprojx) | 节点间移动、停车和固定任务序列 | [说明](NodeTest/节点测试说明.md) |
-| [ServoTest](ServoTest/ServoTest.uvprojx) | PE5/TIM9_CH1 单路舵机测试 | [说明](ServoTest/舵机测试说明.md) |
+| [ServoTest](ServoTest/ServoTest.uvprojx) | PE5/PE6 双舵机镜像与安装测试 | [说明](ServoTest/舵机测试说明.md) |
+| [GreyDisplayTest](GreyDisplayTest/GreyDisplayTest.uvprojx) | 单方向八路灰度黑线路号数码管显示 | [说明](GreyDisplayTest/数码管寻线显示说明.md) |
 
 ## 源码约定
 

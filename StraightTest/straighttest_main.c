@@ -4,14 +4,14 @@
  * 【硬件范围】
  *   前灰阶：PB13=SCL，PB14=SDA
  *   后灰阶：PD1 =SCL，PD2 =SDA
- *   前地址 0x12（命令 0x01），后地址 0x4F
+ *   前/后地址均为 0x12，数据寄存器为 0x30
  *
  *   本测试只初始化并使用前、后两块灰阶。
  *   左、右两块灰阶完全不初始化、不读取。
  *
  * 【有效数据规则】
- *   单块灰阶 raw == 0x00 或 raw == 0xFF 时，认为八路全同、数据不可信，
- *   本周期忽略该传感器。两块都不可信时停车，不驱动电机。
+ *   当前只使用 L2-L7 六路，L1/L8 通过 0x7E 掩码屏蔽。
+ *   六路全白 0x00 或全黑 0x7E 时判为不可信，本周期忽略。
  *
  * 【位姿计算】
  *   前灰阶：1~4 为左，5~8 为右
@@ -83,7 +83,7 @@ extern void b_sw_i2c_init(void);
 
 #define STRAIGHT_YB_ADDR_DEF 0x12
 #define STRAIGHT_YB_ADDR8    ((uint8_t)(STRAIGHT_YB_ADDR_DEF << 1))
-#define STRAIGHT_YB_STATE_CMD 0x01
+#define STRAIGHT_YB_STATE_CMD 0x30U
 
 uint8_t reverse(uint8_t x);
 
@@ -176,7 +176,7 @@ static uint8_t Straight_FrontBits(uint8_t raw)
 {
     uint8_t v = reverse(raw);
     v = (uint8_t)((v >> 1) | (v << 7));
-    return (uint8_t)(~v);
+    return (uint8_t)((~v) & GREY6_ACTIVE_MASK);
 }
 
 static uint8_t Straight_BackBits(uint8_t raw)
@@ -188,11 +188,7 @@ static uint8_t Straight_BackBits(uint8_t raw)
    123+45 -> no correction, or 678+45 -> no correction. */
 static uint8_t Straight_EdgeMask(uint8_t bits)
 {
-    uint8_t middle = (uint8_t)(bits & 0x18U);
-    if (middle != 0x18U) return bits;
-    if ((bits & 0x07U) == 0x07U) return 0;
-    if ((bits & 0xE0U) == 0xE0U) return 0;
-    return bits;
+    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
 }
 
 /* Show black front channels, ch1=leftmost through ch8=rightmost.
@@ -205,14 +201,14 @@ static void Straight_ShowBlackChannels(uint8_t bits, uint8_t read_ok)
     uint8_t pos;
 
     if (read_ok) {
-        for (ch = 0; ch < 8; ch++) {
+        for (ch = 1; ch < 7; ch++) {
             if (bits & (uint8_t)(1u << ch)) count++;
         }
     }
 
     if ((count > 0) && (count <= 4)) {
         pos = (uint8_t)(4 - count);
-        for (ch = 0; ch < 8; ch++) {
+        for (ch = 1; ch < 7; ch++) {
             if (bits & (uint8_t)(1u << ch)) {
                 digits[pos++] = (unsigned char)(ch + 1);
             }
@@ -232,7 +228,7 @@ static uint8_t Straight_ReadBack(uint8_t *raw)
 /* 用户规则：八路全 0 或全 1 都认为该传感器本周期不可信。 */
 static uint8_t Straight_Valid(uint8_t raw)
 {
-    return ((raw != 0x00U) && (raw != 0xFFU)) ? 1U : 0U;
+    return ((raw != 0x00U) && (raw != GREY6_ACTIVE_MASK)) ? 1U : 0U;
 }
 
 static int16_t Straight_Weighted(uint8_t raw, const int8_t w[8])
@@ -252,8 +248,8 @@ static int16_t Straight_Weighted(uint8_t raw, const int8_t w[8])
    前后统一按 1~4 左、5~8 右解释。 */
 static int16_t Straight_Lat(uint8_t raw, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { +4, +3, +2, 0, 0, -2, -3, -4 };
-    static const int8_t BACK_W[8]  = { +4, +3, +2, 0, 0, -2, -3, -4 };
+    static const int8_t FRONT_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
+    static const int8_t BACK_W[8]  = { 0, +8, +5, +1, -1, -5, -8, 0 };
     return Straight_Weighted(raw, back ? BACK_W : FRONT_W);
 }
 
@@ -261,7 +257,7 @@ static int16_t Straight_Lat(uint8_t raw, uint8_t back)
    组合后前1/后1、前8/后8都得到同一个方向的转角误差。 */
 static int16_t Straight_Yaw(uint8_t raw)
 {
-    static const int8_t YAW_W[8] = { +4, +3, +2, +1, -1, -2, -3, -4 };
+    static const int8_t YAW_W[8] = { 0, +8, +5, +1, -1, -5, -8, 0 };
     return Straight_Weighted(raw, YAW_W);
 }
 

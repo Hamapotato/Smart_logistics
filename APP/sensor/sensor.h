@@ -3,6 +3,12 @@
 
 #include "main.h"
 
+/* Effective six-channel tracking range: physical L2..L7 only. */
+#define GREY6_ACTIVE_MASK       0x7EU
+#define GREY6_STOP_MASK_23      0x06U
+#define GREY6_STOP_MASK_67      0x60U
+#define GREY6_BLACK_COUNT       6U
+
 #define FRONT_GREY_SENSOR_READ  F_GW_digital_Read()
 #define BACK_GREY_SENSOR_READ   B_GW_digital_Read()
 #define LEFT_GREY_SENSOR_READ   L_GW_digital_Read()

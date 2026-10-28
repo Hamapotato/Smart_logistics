@@ -13,7 +13,7 @@
  *      线偏到探头 1 那一头 -> 往那一头转，偏到另一边 -> 往另一边转。
  *      「转向」同时修两件事：车心回到线上 + 车头顺线，所以一块传感器就够。
  *
- *      - 走到十字 / 丁字路口（探头 4、5 黑，且 1~4 或 5~8 全黑）时不纠偏，
+ *      - 走到十字 / 丁字路口（探头 4、5 黑，且 2~4 或 5~7 全黑）时不纠偏，
  *        直着开过去。
  *      - 丢线后按最后一次的纠偏方向继续走 TRACE_LOST_MAX 个周期（默认 2 秒），
  *        还找不回来才停住。
@@ -25,10 +25,10 @@
  *      可选：TRACE_DIR_FRONT / TRACE_DIR_BACK / TRACE_DIR_LEFT / TRACE_DIR_RIGHT
  *
  *  【硬件】
- *      前灰阶  软 I2C  PB13 = SCL, PB14 = SDA, 地址 0x4F
- *      后灰阶  软 I2C  PD1  = SCL, PD2  = SDA, 地址 0x4F
- *      左灰阶  软 I2C  PC8  = SCL, PC9  = SDA, 地址 0x4F
- *      右灰阶  软 I2C  PC3  = SCL, PC2  = SDA, 地址 0x4F
+ *      前灰阶  软 I2C  PB13 = SCL, PB14 = SDA, 地址 0x12
+ *      后灰阶  软 I2C  PD1  = SCL, PD2  = SDA, 地址 0x12
+ *      左灰阶  软 I2C  PC8  = SCL, PC9  = SDA, 地址 0x12
+ *      右灰阶  软 I2C  PC3  = SCL, PC2  = SDA, 地址 0x12
  *      四轮板  软 I2C  PF6  = SCL, PF5  = SDA, 地址 0x34
  *      串口    USART1  PA9  = TX, 19200 8N1
  *      绿灯 PA7 / 红灯 PA6（低电平点亮）
@@ -98,7 +98,7 @@
 #define TRACE_YB_REVERSE_RAW 1
 
 /* YB-MUX04 command/register that returns one digital-state byte. */
-#define TRACE_YB_STATE_CMD 0x01
+#define TRACE_YB_STATE_CMD 0x30U
 
 
 /* Start as soon as the selected sensor returns a valid line. */
@@ -192,52 +192,41 @@ extern void I2C_SDA_IN(void);
    而它把 read_byte 的返回值丢掉了：I2C 一失败就返回**没初始化的局部变量**，
    那是个看着合法的垃圾值，拿它开电机会出事。这里直接用带返回值的版本。 */
 #if   (TRACE_DIR == TRACE_DIR_FRONT)
-#if   TRACE_FRONT_USE_YB
 extern sw_i2c_interface_t f_i2c_interface;
 extern void f_sw_i2c_init(void);
 extern int8_t f_sw_i2c_mem_read(sw_i2c_interface_t *, uint8_t, uint8_t, uint8_t *, uint8_t);
-  #define TRACE_SENSOR_INIT() f_sw_i2c_init()
-  #define TRACE_SENSOR_NAME   "Yahboom YB-MUX04-2.0 front PB13/PB14"
-  #define TRACE_SENSOR_ADDR_TEXT "0x12"
-  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
-#else
-extern sw_i2c_interface_t f_i2c_interface;
-extern int8_t f_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
   #define TRACE_I2C_IF        f_i2c_interface
-  #define TRACE_I2C_READ      f_sw_i2c_read_byte
-  #define TRACE_SENSOR_INIT() F_GW_digital_Init()
-  #define TRACE_SENSOR_NAME   "front PB13/PB14"
-  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
-  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
-#endif
+  #define TRACE_I2C_MEM_READ  f_sw_i2c_mem_read
+  #define TRACE_SENSOR_INIT() f_sw_i2c_init()
+  #define TRACE_SENSOR_NAME   "Yahboom YB-MUX04 front PB13/PB14"
 #elif (TRACE_DIR == TRACE_DIR_BACK)
 extern sw_i2c_interface_t b_i2c_interface;
-extern int8_t b_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
+extern void b_sw_i2c_init(void);
+extern int8_t b_sw_i2c_mem_read(sw_i2c_interface_t *, uint8_t, uint8_t, uint8_t *, uint8_t);
   #define TRACE_I2C_IF        b_i2c_interface
-  #define TRACE_I2C_READ      b_sw_i2c_read_byte
-  #define TRACE_SENSOR_INIT() B_GW_digital_Init()
-  #define TRACE_SENSOR_NAME   "back PD1/PD2"
-  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
-  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
+  #define TRACE_I2C_MEM_READ  b_sw_i2c_mem_read
+  #define TRACE_SENSOR_INIT() b_sw_i2c_init()
+  #define TRACE_SENSOR_NAME   "Yahboom YB-MUX04 back PD1/PD2"
 #elif (TRACE_DIR == TRACE_DIR_LEFT)
 extern sw_i2c_interface_t l_i2c_interface;
-extern int8_t l_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
+extern void l_sw_i2c_init(void);
+extern int8_t l_sw_i2c_mem_read(sw_i2c_interface_t *, uint8_t, uint8_t, uint8_t *, uint8_t);
   #define TRACE_I2C_IF        l_i2c_interface
-  #define TRACE_I2C_READ      l_sw_i2c_read_byte
-  #define TRACE_SENSOR_INIT() L_GW_digital_Init()
-  #define TRACE_SENSOR_NAME   "left PC8/PC9"
-  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
-  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
-#else /* TRACE_DIR_RIGHT */
+  #define TRACE_I2C_MEM_READ  l_sw_i2c_mem_read
+  #define TRACE_SENSOR_INIT() l_sw_i2c_init()
+  #define TRACE_SENSOR_NAME   "Yahboom YB-MUX04 left PC8/PC9"
+#else
 extern sw_i2c_interface_t r_i2c_interface;
-extern int8_t r_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
+extern void r_sw_i2c_init(void);
+extern int8_t r_sw_i2c_mem_read(sw_i2c_interface_t *, uint8_t, uint8_t, uint8_t *, uint8_t);
   #define TRACE_I2C_IF        r_i2c_interface
-  #define TRACE_I2C_READ      r_sw_i2c_read_byte
-  #define TRACE_SENSOR_INIT() R_GW_digital_Init()
-  #define TRACE_SENSOR_NAME   "right PC3/PC2"
-  #define TRACE_SENSOR_ADDR_TEXT "0x4F"
-  #define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
+  #define TRACE_I2C_MEM_READ  r_sw_i2c_mem_read
+  #define TRACE_SENSOR_INIT() r_sw_i2c_init()
+  #define TRACE_SENSOR_NAME   "Yahboom YB-MUX04 right PC3/PC2"
 #endif
+
+#define TRACE_SENSOR_ADDR_TEXT "0x12"
+#define TRACE_BLACK_LEVEL   TRACE_BLACK_LEVEL_GW
 
 /* 0x4F 是 7 位地址，软 I2C 收发用的是 8 位形式，要左移一位。 */
 #define TRACE_GW_ADDR8      ((uint8_t)(GW_GRAY_ADDR_DEF << 1))
@@ -285,7 +274,7 @@ static uint8_t Trace_Trans(uint8_t x)
     uint8_t t = 0;
     uint8_t i;
 
-    for (i = 1; i < 8; i++) {
+    for (i = 2; i < 7; i++) {
         if (((x >> i) & 0x01u) != ((x >> (i - 1)) & 0x01u)) t++;
     }
     return t;
@@ -300,7 +289,7 @@ static uint8_t Trace_Valid(uint8_t raw)
 {
     uint8_t pc = Trace_Popcount(raw);
 
-    if ((pc == 0) || (pc == 8)) return 0;
+    if ((pc == 0) || (pc == GREY6_BLACK_COUNT)) return 0;
     if (Trace_Trans(raw) > 2) return 0;
 
     return 1;
@@ -318,7 +307,7 @@ static uint8_t Trace_Valid(uint8_t raw)
    会被 TRACE_SIGN_YAW 吸收，所以程序不需要知道到底是哪种极性。 */
 static int16_t Trace_Pos(uint8_t raw)
 {
-    static const int8_t W[8] = { 6, 4, 2, 1, -1, -2, -4, -6 };
+    static const int8_t W[8] = { 0, 8, 5, 1, -1, -5, -8, 0 };
     int16_t s = 0;
     uint8_t i;
 
@@ -345,8 +334,8 @@ static uint8_t Trace_Blob(uint8_t raw)
     if ((uint8_t)((raw >> 3) & 1u) != b) return 0;
     if ((uint8_t)((raw >> 4) & 1u) != b) return 0;
 
-    if ((uint8_t)(raw & 0x0Fu) == lo) return 1;     /* 左侧 1~4 号全黑 */
-    if ((uint8_t)(raw & 0xF0u) == hi) return 1;     /* 右侧 5~8 号全黑 */
+    if ((uint8_t)(raw & 0x0Eu) == (uint8_t)(lo & 0x0Eu)) return 1;
+    if ((uint8_t)(raw & 0x70u) == (uint8_t)(hi & 0x70u)) return 1;
 
     return 0;
 }
@@ -362,21 +351,15 @@ static uint8_t Trace_ReadRaw(uint8_t *raw)
 {
     uint8_t v = 0xFF;
 
-#if   (TRACE_DIR == TRACE_DIR_FRONT) && TRACE_FRONT_USE_YB
-    if (f_sw_i2c_mem_read(&f_i2c_interface, TRACE_YB_ADDR8,
-                          TRACE_YB_STATE_CMD, &v, 1) != 0) {
+    if (TRACE_I2C_MEM_READ(&TRACE_I2C_IF, TRACE_YB_ADDR8,
+                           TRACE_YB_STATE_CMD, &v, 1) != 0) {
         *raw = 0xFF;
         return 0;
     }
-#if   TRACE_YB_REVERSE_RAW
     v = reverse(v);
-#endif
     v = Trace_YB_MapChannels(v);
-#else
-    if (TRACE_I2C_READ(&TRACE_I2C_IF, TRACE_GW_ADDR8, &v) != 0) return 0;
-#endif
 
-    *raw = v;
+    *raw = (uint8_t)(v & GREY6_ACTIVE_MASK);
     return 1;
 }
 
@@ -390,14 +373,14 @@ static void Trace_ShowBlackChannels(uint8_t raw, uint8_t read_ok)
     uint8_t pos;
 
     if (read_ok) {
-        for (ch = 0; ch < 8; ch++) {
+        for (ch = 1; ch < 7; ch++) {
             if ((uint8_t)((raw >> ch) & 1u) == TRACE_BLACK_LEVEL) count++;
         }
     }
 
     if ((count > 0) && (count <= 4)) {
         pos = (uint8_t)(4 - count);
-        for (ch = 0; ch < 8; ch++) {
+        for (ch = 1; ch < 7; ch++) {
             if ((uint8_t)((raw >> ch) & 1u) == TRACE_BLACK_LEVEL) {
                 digits[pos++] = (unsigned char)(ch + 1);
             }

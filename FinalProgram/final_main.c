@@ -17,7 +17,7 @@
  *   直接参考 NodeTest：
  *   - 前进、后退、左移、右移；
  *   - 平移和旋转纠偏；
- *   - 12/78 节点检测；
+ *   - 23/67 节点检测；
  *   - 反向制动 400 ms。
  *
  * 【灰阶】
@@ -25,7 +25,7 @@
  *   后：PD1 =SCL，PD2 =SDA
  *   左：PC8 =SCL，PC9 =SDA
  *   右：PC3 =SCL，PC2 =SDA
- *   四块均为亚博 YB-MUX04-2.0，地址 0x12，命令 0x01。
+ *   四块均为亚博 YB-MUX04-2.0，地址 0x12，数据寄存器 0x30。
  * ========================================================================== */
 
 #include "main.h"
@@ -54,8 +54,8 @@
 #define NODE_TRACK_LONG_SIGN        (+1)
 #define NODE_TRACK_YAW_K            8
 #define NODE_TRACK_YAW_MAX          1
-#define NODE_TRACK_YAW_SIGN         (+1)  /* forward */
-#define NODE_BACK_YAW_SIGN          (-1)  /* backward */
+#define NODE_TRACK_YAW_SIGN         (+1)  /* forward, restored non-reversed */
+#define NODE_BACK_YAW_SIGN          (+1)  /* backward, same sign after front/back remap */
 #define NODE_SIDE_YAW_SIGN          (-1)  /* left/right */
 #define NODE_TRACK_DEADBAND         2
 
@@ -76,8 +76,8 @@
 
 /* 右灰阶的左侧两路为黑就提前停车，随后再低速居中。
    左侧两路是探头 1、2，对应 mask 0x03。 */
-#define NODE_STOP_LOW_MASK          0x03
-#define NODE_STOP_HIGH_MASK         0xC0
+#define NODE_STOP_MASK_23           GREY6_STOP_MASK_23
+#define NODE_STOP_MASK_67           GREY6_STOP_MASK_67
 #define NODE_ARM_DELAY_TICKS        25
 
 /* 0 = skip post-stop centering, 1 = keep Node_Center() enabled. */
@@ -90,10 +90,26 @@
 #define NODE_MODE_LEFT               2
 #define NODE_MODE_RIGHT              3
 
-/* 队伍选择：只改 FINAL_TEAM 这一行。 */
+/* 队伍默认红方；运行时通过 PD10 在红方和蓝方之间切换。 */
 #define FINAL_TEAM_RED               0
 #define FINAL_TEAM_BLUE              1
-#define FINAL_TEAM                   FINAL_TEAM_RED
+#define FINAL_DEFAULT_TEAM           FINAL_TEAM_RED
+#define FINAL_TEAM_RED_DISPLAY       0U
+#define FINAL_TEAM_BLUE_DISPLAY      1111U
+#define FINAL_RUN_DISPLAY            1234U
+#define FINAL_TEAM_KEY_CONFIRM       3U
+#define FINAL_TEAM_KEY_HIT           (!GPIO_ReadInputDataBit(GPIOD, GPIO_Pin_10))
+
+/* TCRT5000 start sensor on PD12. Idle is high, trigger is low. */
+#define FINAL_START_IR_HIT           (!START_FLAG)
+#define FINAL_START_IR_CLEAR         (START_FLAG)
+#define FINAL_START_IR_CONFIRM       3U
+#define FINAL_START_IR_POLL_MS       20U
+
+/* 1 = 只测试连续前进循迹；其他 BFS、红外、停车、舵机任务全部不执行。 */
+#define FINAL_FORWARD_ONLY_TEST      0
+#define FINAL_FORWARD_TRANSLATION_ENABLE 1
+#define FINAL_FORWARD_YAW_ENABLE     1
 
 #define FINAL_GRID_W                 8U
 #define FINAL_GRID_H                 5U
@@ -102,23 +118,48 @@
 #define FINAL_ROUTE_CAPACITY         (FINAL_MAX_STEPS + 1U)
 #define FINAL_RETURN_WAIT_MAX_MS     5000U
 #define FINAL_RETURN_POLL_MS         200U
-#define FINAL_DELIVERY_MS            1000U
+#define FINAL_SERVO_DELIVER_PE5_US   800U
+#define FINAL_SERVO_DELIVER_PE6_US   1700U
+#define FINAL_SERVO_MID_US           1250U
+#define FINAL_SERVO_HOLD_PE5_US      1700U
+#define FINAL_SERVO_HOLD_PE6_US      800U
+#define FINAL_SERVO_STEP_MS          1500U
 
-#if   (FINAL_TEAM == FINAL_TEAM_RED)
-  #define FINAL_START_X              7U
-  #define FINAL_START_Y              0U
-  #define FINAL_GOAL_X               0U
-  #define FINAL_GOAL_Y               4U
-  #define FINAL_TEAM_NAME            "RED"
-#elif (FINAL_TEAM == FINAL_TEAM_BLUE)
-  #define FINAL_START_X              0U
-  #define FINAL_START_Y              0U
-  #define FINAL_GOAL_X               7U
-  #define FINAL_GOAL_Y               4U
-  #define FINAL_TEAM_NAME            "BLUE"
-#else
-  #error "FINAL_TEAM must be FINAL_TEAM_RED or FINAL_TEAM_BLUE"
-#endif
+#define FINAL_SERVO_STATE_DELIVER    0U
+#define FINAL_SERVO_STATE_MID        1U
+#define FINAL_SERVO_STATE_HOLD       2U
+
+static uint8_t Final_StartX = 7U;
+static uint8_t Final_StartY = 0U;
+static uint8_t Final_GoalX = 0U;
+static uint8_t Final_GoalY = 4U;
+static const char *Final_TeamName = "RED";
+
+static void Final_ConfigureTeam(uint8_t team)
+{
+    if (team == FINAL_TEAM_BLUE)
+    {
+        Final_StartX = 0U;
+        Final_StartY = 0U;
+        Final_GoalX = 7U;
+        Final_GoalY = 4U;
+        Final_TeamName = "BLUE";
+    }
+    else
+    {
+        Final_StartX = 7U;
+        Final_StartY = 0U;
+        Final_GoalX = 0U;
+        Final_GoalY = 4U;
+        Final_TeamName = "RED";
+    }
+}
+
+#define FINAL_START_X Final_StartX
+#define FINAL_START_Y Final_StartY
+#define FINAL_GOAL_X  Final_GoalX
+#define FINAL_GOAL_Y  Final_GoalY
+#define FINAL_TEAM_NAME Final_TeamName
 
 /* 1 = 已确认的固定障碍节点。未知节点按可通过处理。 */
 static uint8_t Final_Blocked[FINAL_GRID_W][FINAL_GRID_H];
@@ -181,18 +222,18 @@ static uint8_t Final_Preferred[FINAL_GRID_W][FINAL_GRID_H];
  *
  * 如果模块安装方向相反，只交换下面两组 mask。
  */
-#define NODE_FRONT_RIGHT_MASK       0x03
-#define NODE_FRONT_RIGHT_HALF       0x0F
-#define NODE_FRONT_LEFT_MASK        0xC0
-#define NODE_FRONT_LEFT_HALF        0xF0
+#define NODE_FRONT_RIGHT_MASK       GREY6_STOP_MASK_23
+#define NODE_FRONT_RIGHT_HALF       0x1E
+#define NODE_FRONT_LEFT_MASK        GREY6_STOP_MASK_67
+#define NODE_FRONT_LEFT_HALF        0x78
 
 /* 只作用于 Node_Center() 的左右修正，不改变循迹或传感器识别。 */
 #define NODE_CORRECT_LATERAL_SIGN   (-1)
 
-#define NODE_RIGHT_FORWARD_MASK     0x03
-#define NODE_RIGHT_FORWARD_HALF     0x0F
-#define NODE_RIGHT_BACK_MASK        0xC0
-#define NODE_RIGHT_BACK_HALF        0xF0
+#define NODE_RIGHT_FORWARD_MASK     GREY6_STOP_MASK_23
+#define NODE_RIGHT_FORWARD_HALF     0x1E
+#define NODE_RIGHT_BACK_MASK        GREY6_STOP_MASK_67
+#define NODE_RIGHT_BACK_HALF        0x78
 
 #define NODE_LED_ON                 0
 #define NODE_LED_OFF                1
@@ -219,7 +260,7 @@ extern void r_sw_i2c_init(void);
 
 #define NODE_YB_ADDR_DEF 0x12
 #define NODE_YB_ADDR8    ((uint8_t)(NODE_YB_ADDR_DEF << 1))
-#define NODE_YB_STATE_CMD 0x01
+#define NODE_YB_STATE_CMD 0x30U
 
 uint8_t reverse(uint8_t x);
 
@@ -339,7 +380,7 @@ static uint8_t Node_Transitions(uint8_t x)
 {
     uint8_t t = 0;
     uint8_t i;
-    for (i = 1; i < 8; i++)
+    for (i = 2; i < 7; i++)
     {
         if (((x >> i) & 1U) != ((x >> (i - 1)) & 1U)) t++;
     }
@@ -348,9 +389,12 @@ static uint8_t Node_Transitions(uint8_t x)
 
 static uint8_t Node_Valid(uint8_t raw)
 {
-    uint8_t pc = Node_Popcount(raw);
-    if ((pc == 0) || (pc == 8)) return 0;
-    if (Node_Transitions(raw) > 2) return 0;
+    uint8_t pc;
+    uint8_t active = (uint8_t)(raw & GREY6_ACTIVE_MASK);
+
+    pc = Node_Popcount(active);
+    if ((pc == 0) || (pc == GREY6_BLACK_COUNT)) return 0;
+    if (Node_Transitions(active) > 2) return 0;
     return 1;
 }
 
@@ -359,16 +403,12 @@ static uint8_t Node_YBBits(uint8_t raw)
 {
     uint8_t v = reverse(raw);
     v = (uint8_t)((v >> 1) | (v << 7));
-    return (uint8_t)(~v);
+    return (uint8_t)((~v) & GREY6_ACTIVE_MASK);
 }
 
 static uint8_t Node_EdgeMask(uint8_t bits)
 {
-    uint8_t middle = (uint8_t)(bits & 0x18U);
-    if (middle != 0x18U) return bits;
-    if ((bits & 0x07U) == 0x07U) return 0;
-    if ((bits & 0xE0U) == 0xE0U) return 0;
-    return bits;
+    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
 }
 
 /* 返回中间两路是否为黑。 */
@@ -400,7 +440,7 @@ static uint8_t Node_IsCenter(uint8_t front_bits, uint8_t right_raw)
 /* 灰阶连续位置，权重与 TraceTest 相同。 */
 static int16_t Node_LinePos(uint8_t raw)
 {
-    static const int8_t W[8] = { 6, 4, 2, 1, -1, -2, -4, -6 };
+    static const int8_t W[8] = { 0, 7, 4, 1, -1, -4, -7, 0 };
     int16_t pos = 0;
     uint8_t i;
 
@@ -427,14 +467,14 @@ static int16_t Node_Weighted(uint8_t bits, const int8_t weight[8])
 
 static int16_t Node_TrackLat(uint8_t bits, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { +8, +5, +2, +1, -1, -2, -5, -8 };
-    static const int8_t BACK_W[8]  = { +8, +5, +2, +1, -1, -2, -5, -8 };
+    static const int8_t FRONT_W[8] = { 0, +7, +4, +1, -1, -4, -7, 0 };
+    static const int8_t BACK_W[8]  = { 0, +7, +4, +1, -1, -4, -7, 0 };
     return Node_Weighted(bits, back ? BACK_W : FRONT_W);
 }
 
 static int16_t Node_TrackYaw(uint8_t bits)
 {
-    static const int8_t YAW_W[8] = { +8, +5, +2, +1, -1, -2, -5, -8 };
+    static const int8_t YAW_W[8] = { 0, +7, +4, +1, -1, -4, -7, 0 };
     return Node_Weighted(bits, YAW_W);
 }
 
@@ -574,7 +614,7 @@ static void Node_GetPoseCenter(const NodeSensors *s, NodePose *p)
         p->valid_count++;
     }
     if (s->back_ok) {
-        p->lat = (int16_t)(p->lat + Node_TrackLat(s->back_ctrl, 1));
+        p->lat = (int16_t)(p->lat - Node_TrackLat(s->back_ctrl, 1));
         p->valid_count++;
     }
     if (s->left_ok) {
@@ -586,11 +626,11 @@ static void Node_GetPoseCenter(const NodeSensors *s, NodePose *p)
         p->valid_count++;
     }
 
-    /* Rotation is a difference, not a sum, between opposite sensors. */
+    /* Front/back modules are mirrored: lateral subtracts rear position, yaw sums. */
     if (s->front_ok && s->back_ok)
         p->yaw = (int16_t)(p->yaw
                 + Node_TrackYaw(s->front_ctrl)
-                - Node_TrackYaw(s->back_ctrl));
+                + Node_TrackYaw(s->back_ctrl));
     if (s->left_ok && s->right_ok)
         p->yaw = (int16_t)(p->yaw
                 + Node_TrackYaw(s->left_ctrl)
@@ -612,12 +652,12 @@ static void Node_GetPoseTravel(const NodeSensors *s, NodePose *p,
             p->valid_count++;
         }
         if (s->back_ok) {
-            p->lat = (int16_t)(p->lat + Node_TrackLat(s->back_ctrl, 1));
+            p->lat = (int16_t)(p->lat - Node_TrackLat(s->back_ctrl, 1));
             p->valid_count++;
         }
         if (s->front_ok && s->back_ok)
             p->yaw = (int16_t)(Node_TrackYaw(s->front_ctrl)
-                             - Node_TrackYaw(s->back_ctrl));
+                             + Node_TrackYaw(s->back_ctrl));
     }
     else
     {
@@ -720,6 +760,13 @@ static int8_t Node_YawSignForMode(uint8_t mode)
     }
 }
 
+static uint8_t Node_StopPairHit(uint8_t bits)
+{
+    return (uint8_t)(
+        (((bits & NODE_STOP_MASK_23) == NODE_STOP_MASK_23)
+      || ((bits & NODE_STOP_MASK_67) == NODE_STOP_MASK_67)));
+}
+
 static uint8_t Node_Travel(uint8_t mode)
 {
     uint16_t tick;
@@ -755,32 +802,16 @@ static uint8_t Node_Travel(uint8_t mode)
             if ((mode == NODE_MODE_FORWARD) || (mode == NODE_MODE_BACK))
             {
                 if ((read_ok & NODE_READ_LEFT) && s.left_ok)
-                {
-                    node_hit |= (uint8_t)(
-                        ((s.left_bits & NODE_STOP_LOW_MASK) == NODE_STOP_LOW_MASK)
-                        || ((s.left_bits & NODE_STOP_HIGH_MASK) == NODE_STOP_HIGH_MASK));
-                }
+                    node_hit |= Node_StopPairHit(s.left_bits);
                 if ((read_ok & NODE_READ_RIGHT) && s.right_ok)
-                {
-                    node_hit |= (uint8_t)(
-                        ((s.right_bits & NODE_STOP_LOW_MASK) == NODE_STOP_LOW_MASK)
-                        || ((s.right_bits & NODE_STOP_HIGH_MASK) == NODE_STOP_HIGH_MASK));
-                }
+                    node_hit |= Node_StopPairHit(s.right_bits);
             }
             else
             {
                 if ((read_ok & NODE_READ_FRONT) && s.front_ok)
-                {
-                    node_hit |= (uint8_t)(
-                        ((s.front_bits & NODE_STOP_LOW_MASK) == NODE_STOP_LOW_MASK)
-                        || ((s.front_bits & NODE_STOP_HIGH_MASK) == NODE_STOP_HIGH_MASK));
-                }
+                    node_hit |= Node_StopPairHit(s.front_bits);
                 if ((read_ok & NODE_READ_BACK) && s.back_ok)
-                {
-                    node_hit |= (uint8_t)(
-                        ((s.back_bits & NODE_STOP_LOW_MASK) == NODE_STOP_LOW_MASK)
-                        || ((s.back_bits & NODE_STOP_HIGH_MASK) == NODE_STOP_HIGH_MASK));
-                }
+                    node_hit |= Node_StopPairHit(s.back_bits);
             }
 
             if (node_hit)
@@ -1224,16 +1255,130 @@ static int8_t Final_FindRouteIndex(const uint8_t *route_x,
     return -1;
 }
 
+static uint16_t Final_ServoClamp(uint16_t pulse)
+{
+    if (pulse < FINAL_SERVO_DELIVER_PE5_US) return FINAL_SERVO_DELIVER_PE5_US;
+    if (pulse > FINAL_SERVO_HOLD_PE5_US) return FINAL_SERVO_HOLD_PE5_US;
+    return pulse;
+}
+
+static void Final_ServoSetPulses(uint16_t pe5_us, uint16_t pe6_us)
+{
+    TIM_SetCompare1(TIM9, Final_ServoClamp(pe5_us));
+    TIM_SetCompare2(TIM9, Final_ServoClamp(pe6_us));
+}
+
+static void Final_ServoApplyState(uint8_t state)
+{
+    if (state == FINAL_SERVO_STATE_DELIVER)
+    {
+        Final_ServoSetPulses(FINAL_SERVO_DELIVER_PE5_US,
+                             FINAL_SERVO_DELIVER_PE6_US);
+    }
+    else if (state == FINAL_SERVO_STATE_MID)
+    {
+        Final_ServoSetPulses(FINAL_SERVO_MID_US, FINAL_SERVO_MID_US);
+    }
+    else
+    {
+        Final_ServoSetPulses(FINAL_SERVO_HOLD_PE5_US,
+                             FINAL_SERVO_HOLD_PE6_US);
+    }
+}
+
+static const char *Final_ServoStateName(uint8_t state)
+{
+    if (state == FINAL_SERVO_STATE_DELIVER) return "DELIVER";
+    if (state == FINAL_SERVO_STATE_HOLD)    return "HOLD";
+    return "MID";
+}
+
+static void Final_ServoRunState(uint8_t state)
+{
+    Final_ServoApplyState(state);
+#if NODE_DEBUG
+    printf("Final: SERVO %s\r\n", Final_ServoStateName(state));
+#endif
+    delay_ms(FINAL_SERVO_STEP_MS);
+}
+
+static void Final_ServoRelease(void)
+{
+    GPIO_InitTypeDef gpio;
+
+    TIM_SetCompare1(TIM9, 0U);
+    TIM_SetCompare2(TIM9, 0U);
+    TIM_Cmd(TIM9, DISABLE);
+
+    GPIO_StructInit(&gpio);
+    gpio.GPIO_Mode = GPIO_Mode_IN;
+    gpio.GPIO_Pin  = GPIO_Pin_5 | GPIO_Pin_6;
+    gpio.GPIO_PuPd = GPIO_PuPd_NOPULL;
+    GPIO_Init(GPIOE, &gpio);
+
+#if NODE_DEBUG
+    printf("Final: SERVO RELEASE FOR RETURN\r\n");
+#endif
+}
+
+static void Final_ServoInit(void)
+{
+    GPIO_InitTypeDef gpio;
+    TIM_TimeBaseInitTypeDef time_base;
+    TIM_OCInitTypeDef oc;
+
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOE, ENABLE);
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_TIM9, ENABLE);
+
+    GPIO_PinAFConfig(GPIOE, GPIO_PinSource5, GPIO_AF_TIM9);
+    GPIO_PinAFConfig(GPIOE, GPIO_PinSource6, GPIO_AF_TIM9);
+    GPIO_StructInit(&gpio);
+    gpio.GPIO_Mode  = GPIO_Mode_AF;
+    gpio.GPIO_Pin   = GPIO_Pin_5 | GPIO_Pin_6;
+    gpio.GPIO_Speed = GPIO_Speed_100MHz;
+    GPIO_Init(GPIOE, &gpio);
+
+    TIM_TimeBaseStructInit(&time_base);
+    time_base.TIM_Prescaler     = 168U - 1U;
+    time_base.TIM_Period        = 20000U - 1U;
+    time_base.TIM_CounterMode   = TIM_CounterMode_Up;
+    time_base.TIM_ClockDivision = TIM_CKD_DIV1;
+    TIM_TimeBaseInit(TIM9, &time_base);
+
+    TIM_OCStructInit(&oc);
+    oc.TIM_OCMode      = TIM_OCMode_PWM1;
+    oc.TIM_OutputState = TIM_OutputState_Enable;
+    oc.TIM_Pulse       = FINAL_SERVO_MID_US;
+    oc.TIM_OCPolarity  = TIM_OCPolarity_High;
+    TIM_OC1Init(TIM9, &oc);
+    TIM_OC1PreloadConfig(TIM9, TIM_OCPreload_Enable);
+    TIM_OC2Init(TIM9, &oc);
+    TIM_OC2PreloadConfig(TIM9, TIM_OCPreload_Enable);
+    TIM_ARRPreloadConfig(TIM9, ENABLE);
+    TIM_Cmd(TIM9, ENABLE);
+
+    Final_ServoApplyState(FINAL_SERVO_STATE_HOLD);
+}
+
 static uint8_t Final_DeliveryTask(void)
 {
-    /* TODO: 在这里接入真实投递机构。当前只保留停车等待占位。 */
-#if NODE_DEBUG
-    printf("Final: DELIVERY TASK PLACEHOLDER\r\n");
-#endif
-
     LED_RED   = NODE_LED_ON;
     LED_GREEN = NODE_LED_OFF;
-    delay_ms(FINAL_DELIVERY_MS);
+
+    Final_ServoInit();
+#if NODE_DEBUG
+    printf("Final: SERVO INIT AT GOAL, HOLD PE5=%u PE6=%u\r\n",
+           (unsigned int)FINAL_SERVO_HOLD_PE5_US,
+           (unsigned int)FINAL_SERVO_HOLD_PE6_US);
+#endif
+
+    Final_ServoRunState(FINAL_SERVO_STATE_HOLD);
+    Final_ServoRunState(FINAL_SERVO_STATE_MID);
+    Final_ServoRunState(FINAL_SERVO_STATE_DELIVER);
+    Final_ServoRunState(FINAL_SERVO_STATE_MID);
+    Final_ServoRunState(FINAL_SERVO_STATE_HOLD);
+    Final_ServoRelease();
+
     LED_RED   = NODE_LED_OFF;
     LED_GREEN = NODE_LED_ON;
     return 1U;
@@ -1263,10 +1408,186 @@ static void Final_PrintPath(const char *name,
 #endif
 }
 
+static void Final_ShowTeamSelection(uint8_t team)
+{
+    if (team == FINAL_TEAM_BLUE)
+    {
+        LED_RED = NODE_LED_OFF;
+        LED_GREEN = NODE_LED_ON;
+        TUBES_SetValue(FINAL_TEAM_BLUE_DISPLAY);
+    }
+    else
+    {
+        LED_RED = NODE_LED_ON;
+        LED_GREEN = NODE_LED_OFF;
+        TUBES_SetValue(FINAL_TEAM_RED_DISPLAY);
+    }
+    TUBES_Display();
+}
+
+static uint8_t Final_WaitForStartSensor(void)
+{
+    GPIO_InitTypeDef button_gpio;
+    uint8_t team = FINAL_DEFAULT_TEAM;
+    uint8_t armed = 0U;
+    uint8_t count = 0U;
+    uint8_t hit;
+    uint8_t button_level;
+    uint8_t button_stable;
+    uint8_t button_count = 0U;
+    uint16_t tick = 0U;
+
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
+    button_gpio.GPIO_Mode = GPIO_Mode_IN;
+    button_gpio.GPIO_Pin = GPIO_Pin_10;
+    button_gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    button_gpio.GPIO_PuPd = GPIO_PuPd_UP;
+    GPIO_Init(GPIOD, &button_gpio);
+    button_stable = (uint8_t)(FINAL_TEAM_KEY_HIT ? 1U : 0U);
+
+    Node_Stop();
+    Final_ShowTeamSelection(team);
+
+#if NODE_DEBUG
+    printf("Final: waiting TCRT5000 start on PD12\r\n");
+#endif
+
+    for (;;)
+    {
+        button_level = (uint8_t)(FINAL_TEAM_KEY_HIT ? 1U : 0U);
+        if (button_level != button_stable)
+        {
+            if (button_count < FINAL_TEAM_KEY_CONFIRM) button_count++;
+            if (button_count >= FINAL_TEAM_KEY_CONFIRM)
+            {
+                button_stable = button_level;
+                button_count = 0U;
+                if (button_level)
+                {
+                    team = (uint8_t)((team == FINAL_TEAM_RED)
+                         ? FINAL_TEAM_BLUE : FINAL_TEAM_RED);
+                    Final_ShowTeamSelection(team);
+                }
+            }
+        }
+        else
+        {
+            button_count = 0U;
+        }
+
+        hit = (uint8_t)(FINAL_START_IR_HIT ? 1U : 0U);
+
+        if (FINAL_START_IR_CLEAR) armed = 1U;
+        if (armed && hit)
+        {
+            if (count < FINAL_START_IR_CONFIRM) count++;
+            if (count >= FINAL_START_IR_CONFIRM) break;
+        }
+        else
+        {
+            count = 0U;
+        }
+
+        /* Keep showing the selected team until TCRT5000 starts. */
+        Final_ShowTeamSelection(team);
+        tick++;
+        delay_ms(FINAL_START_IR_POLL_MS);
+    }
+
+    Node_Stop();
+    LED_RED   = NODE_LED_OFF;
+    LED_GREEN = NODE_LED_ON;
+    TUBES_SetValue(FINAL_RUN_DISPLAY);
+    TUBES_Display();
+
+#if NODE_DEBUG
+    printf("Final: TCRT5000 start confirmed after %u polls, team=%s\r\n",
+           (unsigned int)tick,
+           (team == FINAL_TEAM_BLUE) ? "BLUE" : "RED");
+#endif
+
+    return team;
+}
+
+static void Final_ForwardOnlyLoop(void)
+{
+    NodeSensors sensors;
+    NodePose pose;
+    uint16_t tick = 0U;
+    int16_t vx;
+    int16_t vy;
+    int16_t w;
+
+    printf("Final: FORWARD-ONLY TRACK TEST\r\n");
+
+    for (;;)
+    {
+        Node_ReadSensors(&sensors);
+        Node_GetPoseTravel(&sensors, &pose, NODE_MODE_FORWARD);
+
+        if (pose.valid_count == 0U)
+        {
+            Node_Stop();
+            LED_RED   = NODE_LED_ON;
+            LED_GREEN = NODE_LED_OFF;
+            delay_ms(NODE_TICK_MS);
+            tick++;
+            continue;
+        }
+
+        if (Node_Abs16(pose.lat) <= NODE_TRACK_DEADBAND) pose.lat = 0;
+        if (Node_Abs16(pose.yaw) <= NODE_TRACK_DEADBAND) pose.yaw = 0;
+
+        vx = NODE_CRUISE;
+#if FINAL_FORWARD_TRANSLATION_ENABLE
+        vy = Node_TrackChannel(pose.lat, NODE_TRACK_LAT_K,
+                               NODE_TRACK_LAT_MAX, NODE_TRACK_LAT_SIGN);
+#else
+        vy = 0;
+#endif
+#if FINAL_FORWARD_YAW_ENABLE
+        w  = Node_TrackChannel(pose.yaw, NODE_TRACK_YAW_K,
+                               NODE_TRACK_YAW_MAX,
+                               Node_YawSignForMode(NODE_MODE_FORWARD));
+#else
+        w = 0;
+#endif
+
+        if (Node_MoveVectorW(vx, vy, w))
+        {
+            Node_Stop();
+            LED_RED   = NODE_LED_ON;
+            LED_GREEN = NODE_LED_OFF;
+        }
+        else
+        {
+            LED_RED   = NODE_LED_OFF;
+            LED_GREEN = NODE_LED_ON;
+        }
+
+#if NODE_DEBUG
+        if ((tick % NODE_PRINT_EVERY) == 0U)
+        {
+            printf("Fwd: F=%02X B=%02X ok=%u/%u yaw=%d lat=%d vy=%d w=%d\r\n",
+                   (unsigned int)sensors.front_bits,
+                   (unsigned int)sensors.back_bits,
+                   (unsigned int)sensors.front_ok,
+                   (unsigned int)sensors.back_ok,
+                   (int)pose.yaw, (int)pose.lat,
+                   (int)vy, (int)w);
+        }
+#endif
+
+        tick++;
+        delay_ms(NODE_TICK_MS);
+    }
+}
+
 int main(void)
 {
-    uint8_t current_x = FINAL_START_X;
-    uint8_t current_y = FINAL_START_Y;
+    uint8_t selected_team;
+    uint8_t current_x = 0U;
+    uint8_t current_y = 0U;
     uint8_t next_x;
     uint8_t next_y;
     uint8_t mode;
@@ -1292,6 +1613,10 @@ int main(void)
     SysTick_Init(168);
     LED_Init();
     USART1_Init(19200);
+    TUBES_Driver_Init();
+    TUBES_SetBrightness(6U);
+    TUBES_Clear();
+    INFRAED_Init();
 
     LED_RED   = NODE_LED_OFF;
     LED_GREEN = NODE_LED_OFF;
@@ -1304,8 +1629,19 @@ int main(void)
     b_sw_i2c_init();
     l_sw_i2c_init();
     r_sw_i2c_init();
+#if !FINAL_FORWARD_ONLY_TEST
     Node_IRSensorInit();
+#endif
     delay_ms(100);
+
+    selected_team = Final_WaitForStartSensor();
+    Final_ConfigureTeam(selected_team);
+    current_x = FINAL_START_X;
+    current_y = FINAL_START_Y;
+
+#if FINAL_FORWARD_ONLY_TEST
+    Final_ForwardOnlyLoop();
+#endif
 
     for (x = 0; x < FINAL_GRID_W; x++)
     {
