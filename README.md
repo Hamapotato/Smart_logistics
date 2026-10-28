@@ -58,14 +58,19 @@ STM32F407ZGT6 智慧快递机器人 Keil 工程、测试程序和比赛最终控
 
 ## 2026-10-28 目录迁移
 
-公共源码和历史工程已移到仓库外部的：
+不需要的历史工程、完整公共源码副本和旧模板已移到仓库外部的：
 
 ```text
 ..\old
 ```
 
-其中包括 `APP`、`User`、`Libraries`、`Public`、`RTE`、`Template.uvprojx`、
-`Align`、`Test_Grey`、`GreyCalibrate` 等。当前保留的 `.uvprojx` 仍保留
-原有 `..\APP`、`..\User` 等相对路径；在本机编译前，需要恢复这些公共目录，
-或把工程文件里的引用改到 `..\..\old\...`。从远端全新克隆时，`old` 不在
-仓库中，因此这些工程不是完全自包含的。
+其中包括 `Template.uvprojx`、`Align`、`Test_Grey`、`GreyCalibrate`、
+日志和个人调试配置等。
+
+当前 10 个工程所需的 90 个共享文件已从 `old` 选择性恢复到根目录，包括：
+
+- 工程明确引用的 `APP`、`Libraries`、`Public`、`User` 源文件；
+- 21 个 include 目录中的必要头文件；
+- `APP`、`User`、`Libraries`、`Public` 的原始相对路径保持不变。
+
+2026-10-28 已对 10 个工程逐一执行 Keil 全量 Rebuild，全部 `0 Error(s)`。
