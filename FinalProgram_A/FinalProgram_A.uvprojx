@@ -49,7 +49,7 @@
             <InvalidFlash>1</InvalidFlash>
           </TargetStatus>
           <OutputDirectory>.\Obj\</OutputDirectory>
-          <OutputName>FinalProgramGW</OutputName>
+          <OutputName>FinalProgram_A</OutputName>
           <CreateExecutable>1</CreateExecutable>
           <CreateLib>0</CreateLib>
           <CreateHexFile>1</CreateHexFile>
@@ -385,9 +385,9 @@
           <GroupName>User</GroupName>
           <Files>
             <File>
-              <FileName>final_gw_main.c</FileName>
+              <FileName>final_a_main.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\final_gw_main.c</FilePath>
+              <FilePath>.\final_a_main.c</FilePath>
             </File>
             <File>
               <FileName>stm32f4xx_it.c</FileName>

@@ -1,5 +1,5 @@
 /* ============================================================================
- * FinalProgramGW —— 感为 GW 四灰阶完整比赛程序
+ * B车程序 FinalProgram_B —— 去程 BFS、记录路线、投递、返程动态避障
  *
  * 【场地】
  *   节点范围 X=0..7, Y=0..4；车头固定朝 +Y。
@@ -25,7 +25,7 @@
  *   后：PD1 =SCL，PD2 =SDA
  *   左：PC8 =SCL，PC9 =SDA
  *   右：PC3 =SCL，PC2 =SDA
- *   四块均为感为 GW 八路灰阶，地址 0x4F，数字开关量模式。
+ *   四块均为亚博 YB-MUX04-2.0，地址 0x12，数据寄存器 0x30。
  * ========================================================================== */
 
 #include "main.h"
@@ -35,7 +35,7 @@
  * ------------------------------------------------------------------------- */
 
 /* 节点间直行速度，单位与 MoveTest 的 0x33 一致。 */
-#define NODE_CRUISE                 10
+#define NODE_CRUISE                 17
 
 /* 前灰阶循迹纠偏。 */
 #define NODE_STEER_K                6
@@ -48,12 +48,12 @@
    平移符号四个方向均为 +1。
    旋转符号前进/后退为 +1，左移/右移为 -1。 */
 #define NODE_TRACK_LAT_K            8
-#define NODE_TRACK_LAT_MAX          2
+#define NODE_TRACK_LAT_MAX          3
 #define NODE_TRACK_LAT_SIGN         (+1)
-#define NODE_TRACK_LONG_MAX         2
+#define NODE_TRACK_LONG_MAX         3
 #define NODE_TRACK_LONG_SIGN        (+1)
 #define NODE_TRACK_YAW_K            8
-#define NODE_TRACK_YAW_MAX          1
+#define NODE_TRACK_YAW_MAX          2
 #define NODE_TRACK_YAW_SIGN         (+1)  /* forward, restored non-reversed */
 #define NODE_BACK_YAW_SIGN          (+1)  /* backward, same sign after front/back remap */
 #define NODE_SIDE_YAW_SIGN          (-1)  /* left/right */
@@ -76,17 +76,18 @@
 
 /* 右灰阶的左侧两路为黑就提前停车，随后再低速居中。
    左侧两路是探头 1、2，对应 mask 0x03。 */
-#define NODE_STOP_MASK_12           0x03U
-#define NODE_STOP_MASK_23           0x06U
-#define NODE_STOP_MASK_87           0xC0U
-#define NODE_STOP_MASK_76           0x60U
+#define NODE_STOP_MASK_23           GREY6_STOP_MASK_23
+#define NODE_STOP_MASK_67           GREY6_STOP_MASK_67
 #define NODE_ARM_DELAY_TICKS        25
-#define NODE_DEPART_GRACE_TICKS     20U
-#define NODE_SENSOR_READ_RETRY      3U
+#define NODE_MID_IR_CHECK_INTERVAL_MS  200U
+#define NODE_MID_IR_CHECK_COUNT         5U
+#define NODE_MID_IR_CHECK_INTERVAL_TICKS \
+    (NODE_MID_IR_CHECK_INTERVAL_MS / NODE_TICK_MS)
+#define NODE_RETRACE_ARM_TICKS      2U
 
 /* 0 = skip post-stop centering, 1 = keep Node_Center() enabled. */
 #define NODE_POST_STOP_CENTER        0
-#define NODE_BRAKE_SPEED            1
+#define NODE_BRAKE_SPEED            4
 #define NODE_BRAKE_MS               400
 
 #define NODE_MODE_FORWARD            0
@@ -120,34 +121,12 @@
 #define FINAL_GRID_NODES             (FINAL_GRID_W * FINAL_GRID_H)
 #define FINAL_MAX_STEPS              64U
 #define FINAL_ROUTE_CAPACITY         (FINAL_MAX_STEPS + 1U)
-#define FINAL_RETURN_WAIT_MAX_MS     5000U
-#define FINAL_RETURN_POLL_MS         200U
-/* Base mechanical positions before the placement-direction trim. */
-#define FINAL_SERVO_PE5_DELIVER_BASE_US 800U
-#define FINAL_SERVO_PE5_HOLD_BASE_US    1700U
-#define FINAL_SERVO_PE6_DELIVER_BASE_US 1700U
-#define FINAL_SERVO_PE6_HOLD_BASE_US    800U
-
-/* Shift DELIVER, MID and HOLD together toward the placement action. */
-#define FINAL_SERVO_TOWARD_DELIVER_US   500U
-
-#define FINAL_SERVO_DELIVER_PE5_US \
-    (FINAL_SERVO_PE5_DELIVER_BASE_US - FINAL_SERVO_TOWARD_DELIVER_US)
-#define FINAL_SERVO_HOLD_PE5_US \
-    (FINAL_SERVO_PE5_HOLD_BASE_US - FINAL_SERVO_TOWARD_DELIVER_US)
-#define FINAL_SERVO_MID_PE5_US \
-    (((FINAL_SERVO_PE5_DELIVER_BASE_US + FINAL_SERVO_PE5_HOLD_BASE_US) / 2U) - FINAL_SERVO_TOWARD_DELIVER_US)
-
-#define FINAL_SERVO_DELIVER_PE6_US \
-    (FINAL_SERVO_PE6_DELIVER_BASE_US + FINAL_SERVO_TOWARD_DELIVER_US)
-#define FINAL_SERVO_HOLD_PE6_US \
-    (FINAL_SERVO_PE6_HOLD_BASE_US + FINAL_SERVO_TOWARD_DELIVER_US)
-#define FINAL_SERVO_MID_PE6_US \
-    (((FINAL_SERVO_PE6_DELIVER_BASE_US + FINAL_SERVO_PE6_HOLD_BASE_US) / 2U) + FINAL_SERVO_TOWARD_DELIVER_US)
-
-#define FINAL_SERVO_SAFE_MIN_US        500U
-#define FINAL_SERVO_SAFE_MAX_US        2500U
-#define FINAL_SERVO_STEP_MS            1500U
+#define FINAL_RETURN_RECHECK_MS      2000U
+#define FINAL_TRAVEL_FAILURE_LIMIT   2U
+#define FINAL_SERVO_DELIVER_PE5_US   500U
+#define FINAL_SERVO_MID_US           800U
+#define FINAL_SERVO_HOLD_PE5_US      1300U
+#define FINAL_SERVO_STEP_MS          1500U
 
 #define FINAL_SERVO_STATE_DELIVER    0U
 #define FINAL_SERVO_STATE_MID        1U
@@ -187,6 +166,17 @@ static void Final_ConfigureTeam(uint8_t team)
 
 /* 1 = 已确认的固定障碍节点。未知节点按可通过处理。 */
 static uint8_t Final_Blocked[FINAL_GRID_W][FINAL_GRID_H];
+
+static void Final_ClearBlockedMap(void)
+{
+    uint8_t x;
+    uint8_t y;
+
+    for (x = 0U; x < FINAL_GRID_W; x++)
+        for (y = 0U; y < FINAL_GRID_H; y++)
+            Final_Blocked[x][y] = 0U;
+}
+
 
 /* 去程实际路线节点。返程 BFS 在等长路径中优先选择这些节点。 */
 static uint8_t Final_Preferred[FINAL_GRID_W][FINAL_GRID_H];
@@ -228,7 +218,7 @@ static uint8_t Final_Preferred[FINAL_GRID_W][FINAL_GRID_H];
 /* I2C 写入重试次数。 */
 #define NODE_RETRY                  3
 
-/* 当前感为 GW 数字量：原始 0 表示黑色，1 表示白色。 */
+/* 灰阶黑线极性：0 表示原始 bit=0 为黑。 */
 #define NODE_BLACK_LEVEL            1
 
 /* 中间两路探头 4、5。 */
@@ -246,18 +236,18 @@ static uint8_t Final_Preferred[FINAL_GRID_W][FINAL_GRID_H];
  *
  * 如果模块安装方向相反，只交换下面两组 mask。
  */
-#define NODE_FRONT_RIGHT_MASK       0x03U
-#define NODE_FRONT_RIGHT_HALF       0x0FU
-#define NODE_FRONT_LEFT_MASK        0xC0U
-#define NODE_FRONT_LEFT_HALF        0xF0U
+#define NODE_FRONT_RIGHT_MASK       GREY6_STOP_MASK_23
+#define NODE_FRONT_RIGHT_HALF       0x1E
+#define NODE_FRONT_LEFT_MASK        GREY6_STOP_MASK_67
+#define NODE_FRONT_LEFT_HALF        0x78
 
 /* 只作用于 Node_Center() 的左右修正，不改变循迹或传感器识别。 */
 #define NODE_CORRECT_LATERAL_SIGN   (-1)
 
-#define NODE_RIGHT_FORWARD_MASK     0x03U
-#define NODE_RIGHT_FORWARD_HALF     0x0FU
-#define NODE_RIGHT_BACK_MASK        0xC0U
-#define NODE_RIGHT_BACK_HALF        0xF0U
+#define NODE_RIGHT_FORWARD_MASK     GREY6_STOP_MASK_23
+#define NODE_RIGHT_FORWARD_HALF     0x1E
+#define NODE_RIGHT_BACK_MASK        GREY6_STOP_MASK_67
+#define NODE_RIGHT_BACK_HALF        0x78
 
 #define NODE_LED_ON                 0
 #define NODE_LED_OFF                1
@@ -267,12 +257,24 @@ extern sw_i2c_interface_t f_i2c_interface;
 extern sw_i2c_interface_t b_i2c_interface;
 extern sw_i2c_interface_t l_i2c_interface;
 extern sw_i2c_interface_t r_i2c_interface;
-extern int8_t f_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
-extern int8_t b_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
-extern int8_t l_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
-extern int8_t r_sw_i2c_read_byte(sw_i2c_interface_t *, uint8_t, uint8_t *);
+extern int8_t f_sw_i2c_mem_read(sw_i2c_interface_t *,
+                                uint8_t, uint8_t, uint8_t *, uint8_t);
+extern int8_t b_sw_i2c_mem_read(sw_i2c_interface_t *,
+                                uint8_t, uint8_t, uint8_t *, uint8_t);
+extern int8_t l_sw_i2c_mem_read(sw_i2c_interface_t *,
+                                uint8_t, uint8_t, uint8_t *, uint8_t);
+extern int8_t r_sw_i2c_mem_read(sw_i2c_interface_t *,
+                                uint8_t, uint8_t, uint8_t *, uint8_t);
+extern void f_sw_i2c_init(void);
+extern void b_sw_i2c_init(void);
+extern void l_sw_i2c_init(void);
+extern void r_sw_i2c_init(void);
 
 #define NODE_GW_ADDR8 ((uint8_t)(GW_GRAY_ADDR_DEF << 1))
+
+#define NODE_YB_ADDR_DEF 0x12
+#define NODE_YB_ADDR8    ((uint8_t)(NODE_YB_ADDR_DEF << 1))
+#define NODE_YB_STATE_CMD 0x30U
 
 uint8_t reverse(uint8_t x);
 
@@ -358,29 +360,23 @@ static void Node_Stop(void)
 
 static uint8_t Node_ReadFront(uint8_t *raw)
 {
-    uint8_t retry;
-    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
-        if (f_sw_i2c_read_byte(&f_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-            return 1U;
-    return 0U;
+    return (f_sw_i2c_mem_read(&f_i2c_interface, NODE_YB_ADDR8,
+                              NODE_YB_STATE_CMD, raw, 1) == 0)
+         ? 1U : 0U;
 }
 
 static uint8_t Node_ReadBack(uint8_t *raw)
 {
-    uint8_t retry;
-    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
-        if (b_sw_i2c_read_byte(&b_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-            return 1U;
-    return 0U;
+    return (b_sw_i2c_mem_read(&b_i2c_interface, NODE_YB_ADDR8,
+                              NODE_YB_STATE_CMD, raw, 1) == 0)
+         ? 1U : 0U;
 }
 
 static uint8_t Node_ReadRight(uint8_t *raw)
 {
-    uint8_t retry;
-    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
-        if (r_sw_i2c_read_byte(&r_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-            return 1U;
-    return 0U;
+    return (r_sw_i2c_mem_read(&r_i2c_interface, NODE_YB_ADDR8,
+                              NODE_YB_STATE_CMD, raw, 1) == 0)
+         ? 1U : 0U;
 }
 
 static uint8_t Node_Popcount(uint8_t x)
@@ -398,7 +394,7 @@ static uint8_t Node_Transitions(uint8_t x)
 {
     uint8_t t = 0;
     uint8_t i;
-    for (i = 1; i < 8; i++)
+    for (i = 2; i < 7; i++)
     {
         if (((x >> i) & 1U) != ((x >> (i - 1)) & 1U)) t++;
     }
@@ -407,27 +403,26 @@ static uint8_t Node_Transitions(uint8_t x)
 
 static uint8_t Node_Valid(uint8_t raw)
 {
-    uint8_t pc = Node_Popcount(raw);
+    uint8_t pc;
+    uint8_t active = (uint8_t)(raw & GREY6_ACTIVE_MASK);
 
-    if ((pc == 0) || (pc == 8)) return 0;
-    if (Node_Transitions(raw) > 2) return 0;
+    pc = Node_Popcount(active);
+    if ((pc == 0) || (pc == GREY6_BLACK_COUNT)) return 0;
+    if (Node_Transitions(active) > 2) return 0;
     return 1;
 }
 
-/* Current GW modules report black as 0; normalize to black = 1. */
-static uint8_t Node_GWBits(uint8_t raw)
+/* Same conversion as StraightTest front YB-MUX04-2.0. */
+static uint8_t Node_YBBits(uint8_t raw)
 {
-    return (uint8_t)(~raw);
+    uint8_t v = reverse(raw);
+    v = (uint8_t)((v >> 1) | (v << 7));
+    return (uint8_t)((~v) & GREY6_ACTIVE_MASK);
 }
 
 static uint8_t Node_EdgeMask(uint8_t bits)
 {
-    uint8_t middle = (uint8_t)(bits & 0x18U);
-
-    if (middle != 0x18U) return bits;
-    if ((bits & 0x07U) == 0x07U) return 0U;
-    if ((bits & 0xE0U) == 0xE0U) return 0U;
-    return bits;
+    return (uint8_t)(bits & GREY6_ACTIVE_MASK);
 }
 
 /* 返回中间两路是否为黑。 */
@@ -459,7 +454,7 @@ static uint8_t Node_IsCenter(uint8_t front_bits, uint8_t right_raw)
 /* 灰阶连续位置，权重与 TraceTest 相同。 */
 static int16_t Node_LinePos(uint8_t raw)
 {
-    static const int8_t W[8] = { 6, 4, 3, 1, -1, -3, -4, -6 };
+    static const int8_t W[8] = { 0, 7, 4, 1, -1, -4, -7, 0 };
     int16_t pos = 0;
     uint8_t i;
 
@@ -486,14 +481,14 @@ static int16_t Node_Weighted(uint8_t bits, const int8_t weight[8])
 
 static int16_t Node_TrackLat(uint8_t bits, uint8_t back)
 {
-    static const int8_t FRONT_W[8] = { +6, +4, +3, +1, -1, -3, -4, -6 };
-    static const int8_t BACK_W[8]  = { +6, +4, +3, +1, -1, -3, -4, -6 };
+    static const int8_t FRONT_W[8] = { 0, +7, +4, +1, -1, -4, -7, 0 };
+    static const int8_t BACK_W[8]  = { 0, +7, +4, +1, -1, -4, -7, 0 };
     return Node_Weighted(bits, back ? BACK_W : FRONT_W);
 }
 
 static int16_t Node_TrackYaw(uint8_t bits)
 {
-    static const int8_t YAW_W[8] = { +6, +4, +3, +1, -1, -3, -4, -6 };
+    static const int8_t YAW_W[8] = { 0, +7, +4, +1, -1, -4, -7, 0 };
     return Node_Weighted(bits, YAW_W);
 }
 
@@ -577,11 +572,9 @@ typedef struct
 
 static uint8_t Node_ReadLeft(uint8_t *raw)
 {
-    uint8_t retry;
-    for (retry = 0U; retry < NODE_SENSOR_READ_RETRY; retry++)
-        if (l_sw_i2c_read_byte(&l_i2c_interface, NODE_GW_ADDR8, raw) == 0)
-            return 1U;
-    return 0U;
+    return (l_sw_i2c_mem_read(&l_i2c_interface, NODE_YB_ADDR8,
+                              NODE_YB_STATE_CMD, raw, 1) == 0)
+         ? 1U : 0U;
 }
 
 static uint8_t Node_ReadSensors(NodeSensors *s)
@@ -595,27 +588,27 @@ static uint8_t Node_ReadSensors(NodeSensors *s)
 
     if (Node_ReadFront(&s->front_raw)) {
         read_ok |= NODE_READ_FRONT;
-        s->front_bits = Node_GWBits(s->front_raw);
+        s->front_bits = Node_YBBits(s->front_raw);
         s->front_ok = Node_Valid(s->front_bits);
         if (s->front_ok) s->front_ctrl = Node_EdgeMask(s->front_bits);
     }
     if (Node_ReadBack(&s->back_raw)) {
         read_ok |= NODE_READ_BACK;
-        s->back_bits = Node_GWBits(s->back_raw);
+        s->back_bits = Node_YBBits(s->back_raw);
         s->back_ok = Node_Valid(s->back_bits);
         if (s->back_ok) s->back_ctrl = Node_EdgeMask(s->back_bits);
     }
     if (Node_ReadLeft(&s->left_raw)) {
         read_ok |= NODE_READ_LEFT;
         /* Left module is 8..1 front-to-back; reverse to 1..8. */
-        s->left_bits = reverse(Node_GWBits(s->left_raw));
+        s->left_bits = reverse(Node_YBBits(s->left_raw));
         s->left_ok = Node_Valid(s->left_bits);
         if (s->left_ok) s->left_ctrl = Node_EdgeMask(s->left_bits);
     }
     if (Node_ReadRight(&s->right_raw)) {
         read_ok |= NODE_READ_RIGHT;
         /* Right module is already 1..8 front-to-back. */
-        s->right_bits = Node_GWBits(s->right_raw);
+        s->right_bits = Node_YBBits(s->right_raw);
         s->right_ok = Node_Valid(s->right_bits);
         if (s->right_ok) s->right_ctrl = Node_EdgeMask(s->right_bits);
     }
@@ -784,13 +777,29 @@ static int8_t Node_YawSignForMode(uint8_t mode)
 static uint8_t Node_StopPairHit(uint8_t bits)
 {
     return (uint8_t)(
-        (((bits & NODE_STOP_MASK_12) == NODE_STOP_MASK_12)
-      || ((bits & NODE_STOP_MASK_23) == NODE_STOP_MASK_23)
-      || ((bits & NODE_STOP_MASK_87) == NODE_STOP_MASK_87)
-      || ((bits & NODE_STOP_MASK_76) == NODE_STOP_MASK_76)));
+        (((bits & NODE_STOP_MASK_23) == NODE_STOP_MASK_23)
+      || ((bits & NODE_STOP_MASK_67) == NODE_STOP_MASK_67)));
 }
 
-static uint8_t Node_Travel(uint8_t mode)
+static void Final_ReadIRSides(uint8_t x, uint8_t y,
+                              uint8_t *front_out,
+                              uint8_t *back_out,
+                              uint8_t *left_out,
+                              uint8_t *right_out);
+static uint8_t Final_IrBlocksMode(uint8_t mode,
+                                  uint8_t front,
+                                  uint8_t back,
+                                  uint8_t left,
+                                  uint8_t right);
+static const char *Node_ModeName(uint8_t mode);
+static uint8_t Node_ReverseMode(uint8_t mode);
+static void Node_BrakeForMode(uint8_t mode);
+
+static uint8_t Node_TravelCore(uint8_t mode,
+                               uint8_t start_x,
+                               uint8_t start_y,
+                               uint8_t check_mid_obstacle,
+                               uint8_t arm_delay_ticks)
 {
     uint16_t tick;
     NodeSensors s;
@@ -799,6 +808,12 @@ static uint8_t Node_Travel(uint8_t mode)
     uint8_t node_armed = 0;
     uint8_t node_hit;
     uint8_t need_read;
+    uint8_t front;
+    uint8_t back;
+    uint8_t left;
+    uint8_t right;
+    uint8_t mid_checks_done = 0U;
+    uint16_t next_mid_check_tick = NODE_MID_IR_CHECK_INTERVAL_TICKS;
     int16_t vx;
     int16_t vy;
     int16_t w;
@@ -813,11 +828,44 @@ static uint8_t Node_Travel(uint8_t mode)
         if ((read_ok & need_read) != need_read)
         {
             Node_Stop();
-            delay_ms(NODE_TICK_MS);
-            continue;
+            return 0;
         }
 
-        if (tick >= NODE_ARM_DELAY_TICKS) node_armed = 1;
+        if (check_mid_obstacle &&
+            (mid_checks_done < NODE_MID_IR_CHECK_COUNT) &&
+            (tick >= next_mid_check_tick))
+        {
+            uint8_t check_no = (uint8_t)(mid_checks_done + 1U);
+            uint16_t check_ms = (uint16_t)(tick * NODE_TICK_MS);
+
+            mid_checks_done++;
+            next_mid_check_tick =
+                (uint16_t)(next_mid_check_tick + NODE_MID_IR_CHECK_INTERVAL_TICKS);
+            Final_ReadIRSides(start_x, start_y,
+                              &front, &back, &left, &right);
+            if (Final_IrBlocksMode(mode, front, back, left, right))
+            {
+                uint8_t reverse_mode = Node_ReverseMode(mode);
+
+#if NODE_DEBUG
+                printf("Final: MID OBSTACLE check=%u time=%ums mode=%s, return to (%u,%u)\r\n",
+                       (unsigned int)check_no,
+                       (unsigned int)check_ms,
+                       Node_ModeName(mode),
+                       (unsigned int)start_x, (unsigned int)start_y);
+#endif
+
+                Node_BrakeForMode(mode);
+                if ((reverse_mode == 0xFFU) ||
+                    (Node_TravelCore(reverse_mode, start_x, start_y,
+                                     0U, NODE_RETRACE_ARM_TICKS) == 0U))
+                    return 0U;
+
+                return 2U;
+            }
+        }
+
+        if (tick >= arm_delay_ticks) node_armed = 1;
 
         if (node_armed)
         {
@@ -840,16 +888,7 @@ static uint8_t Node_Travel(uint8_t mode)
 
             if (node_hit)
             {
-                if (mode == NODE_MODE_FORWARD)
-                    Node_MoveVector(-NODE_BRAKE_SPEED, 0);
-                else if (mode == NODE_MODE_BACK)
-                    Node_MoveVector(NODE_BRAKE_SPEED, 0);
-                else if (mode == NODE_MODE_RIGHT)
-                    Node_MoveVector(0, NODE_BRAKE_SPEED);
-                else
-                    Node_MoveVector(0, -NODE_BRAKE_SPEED);
-                delay_ms(NODE_BRAKE_MS);
-                Node_Stop();
+                Node_BrakeForMode(mode);
                 return 1;
             }
         }
@@ -857,25 +896,7 @@ static uint8_t Node_Travel(uint8_t mode)
         Node_GetPoseTravel(&s, &p, mode);
         if (p.valid_count == 0)
         {
-            if (tick < NODE_DEPART_GRACE_TICKS)
-            {
-                vx = 0;
-                vy = 0;
-                w = 0;
-                if (mode == NODE_MODE_FORWARD) vx = NODE_CRUISE;
-                else if (mode == NODE_MODE_BACK) vx = -NODE_CRUISE;
-                else if (mode == NODE_MODE_LEFT) vy = NODE_CRUISE;
-                else if (mode == NODE_MODE_RIGHT) vy = -NODE_CRUISE;
-                if (Node_MoveVectorW(vx, vy, w))
-                {
-                    Node_Stop();
-                    return 0;
-                }
-            }
-            else
-            {
-                Node_Stop();
-            }
+            Node_Stop();
             delay_ms(NODE_TICK_MS);
             continue;
         }
@@ -914,6 +935,82 @@ static uint8_t Node_Travel(uint8_t mode)
 
     Node_Stop();
     return 0;
+}
+
+
+static uint8_t Node_Travel(uint8_t mode,
+                           uint8_t start_x,
+                           uint8_t start_y)
+{
+    return Node_TravelCore(mode, start_x, start_y,
+                           1U, NODE_ARM_DELAY_TICKS);
+}
+
+static uint8_t Node_TravelNoMid(uint8_t mode,
+                                uint8_t start_x,
+                                uint8_t start_y)
+{
+    return Node_TravelCore(mode, start_x, start_y,
+                           0U, NODE_ARM_DELAY_TICKS);
+}
+
+/*
+ * Retry the same node-to-node move after the first generic travel failure.
+ * A result of 0 means the move failed FINAL_TRAVEL_FAILURE_LIMIT times.
+ * Mid-route obstacle results (2) are returned immediately for the existing
+ * wait-and-recheck handling.
+ */
+static uint8_t Node_TravelWithFailureLimit(uint8_t mode,
+                                           uint8_t start_x,
+                                           uint8_t start_y)
+{
+    uint8_t attempt;
+    uint8_t result;
+
+    for (attempt = 1U; attempt <= FINAL_TRAVEL_FAILURE_LIMIT; attempt++)
+    {
+        result = Node_Travel(mode, start_x, start_y);
+        if (result != 0U) return result;
+
+#if NODE_DEBUG
+        printf("Final: TRAVEL FAILED (%u,%u) mode=%s attempt=%u/%u\r\n",
+               (unsigned int)start_x, (unsigned int)start_y,
+               Node_ModeName(mode),
+               (unsigned int)attempt,
+               (unsigned int)FINAL_TRAVEL_FAILURE_LIMIT);
+#endif
+
+        if (attempt < FINAL_TRAVEL_FAILURE_LIMIT)
+        {
+            Node_Stop();
+            delay_ms(NODE_INERTIA_SETTLE_MS);
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t Node_ReverseMode(uint8_t mode)
+{
+    if (mode == NODE_MODE_FORWARD) return NODE_MODE_BACK;
+    if (mode == NODE_MODE_BACK) return NODE_MODE_FORWARD;
+    if (mode == NODE_MODE_LEFT) return NODE_MODE_RIGHT;
+    if (mode == NODE_MODE_RIGHT) return NODE_MODE_LEFT;
+    return 0xFFU;
+}
+
+static void Node_BrakeForMode(uint8_t mode)
+{
+    if (mode == NODE_MODE_FORWARD)
+        Node_MoveVector(-NODE_BRAKE_SPEED, 0);
+    else if (mode == NODE_MODE_BACK)
+        Node_MoveVector(NODE_BRAKE_SPEED, 0);
+    else if (mode == NODE_MODE_RIGHT)
+        Node_MoveVector(0, NODE_BRAKE_SPEED);
+    else if (mode == NODE_MODE_LEFT)
+        Node_MoveVector(0, -NODE_BRAKE_SPEED);
+    delay_ms(NODE_BRAKE_MS);
+    Node_Stop();
 }
 
 static const char *Node_ModeName(uint8_t mode)
@@ -1029,6 +1126,23 @@ static void Final_UpdateBlockedMap(uint8_t x, uint8_t y,
     Final_Blocked[x][y] = 0U;
 }
 
+static uint8_t Final_IrHasUnknownObstacle(uint8_t x, uint8_t y,
+                                           uint8_t front,
+                                           uint8_t back,
+                                           uint8_t left,
+                                           uint8_t right)
+{
+    if (front && ((y + 1U) < FINAL_GRID_H)
+        && !Final_Blocked[x][y + 1U]) return 1U;
+    if (back && (y > 0U)
+        && !Final_Blocked[x][y - 1U]) return 1U;
+    if (left && (x > 0U)
+        && !Final_Blocked[x - 1U][y]) return 1U;
+    if (right && ((x + 1U) < FINAL_GRID_W)
+        && !Final_Blocked[x + 1U][y]) return 1U;
+    return 0U;
+}
+
 static uint8_t Final_ModeForStep(uint8_t x, uint8_t y,
                                  uint8_t nx, uint8_t ny)
 {
@@ -1037,6 +1151,45 @@ static uint8_t Final_ModeForStep(uint8_t x, uint8_t y,
     if ((ny == y) && (nx == (uint8_t)(x - 1U))) return NODE_MODE_LEFT;
     if ((ny == y) && (nx == (uint8_t)(x + 1U))) return NODE_MODE_RIGHT;
     return 0xFFU;
+}
+
+static uint8_t Final_ModeTargetKnownBlocked(uint8_t x, uint8_t y,
+                                             uint8_t mode)
+{
+    uint8_t nx = x;
+    uint8_t ny = y;
+
+    if (mode == NODE_MODE_FORWARD) ny++;
+    else if (mode == NODE_MODE_BACK) ny--;
+    else if (mode == NODE_MODE_LEFT) nx--;
+    else if (mode == NODE_MODE_RIGHT) nx++;
+    else return 0U;
+
+    if ((nx >= FINAL_GRID_W) || (ny >= FINAL_GRID_H)) return 0U;
+    return Final_Blocked[nx][ny];
+}
+
+static uint8_t Final_StepBackHistory(const uint8_t *path_x,
+                                     const uint8_t *path_y,
+                                     uint8_t *path_len,
+                                     uint8_t *current_x,
+                                     uint8_t *current_y)
+{
+    uint8_t mode;
+    int16_t i;
+
+    if (*path_len < 2U) return 0U;
+    i = (int16_t)(*path_len - 2U);
+    mode = Final_ModeForStep(*current_x, *current_y,
+                             path_x[i], path_y[i]);
+    if (mode == 0xFFU) return 0U;
+    if (Node_TravelNoMid(mode, *current_x, *current_y) == 0U)
+        return 0U;
+
+    *current_x = path_x[i];
+    *current_y = path_y[i];
+    (*path_len)--;
+    return 1U;
 }
 
 static uint8_t Final_IrBlocksMode(uint8_t mode,
@@ -1074,28 +1227,37 @@ static void Final_MarkBlockedForMode(uint8_t x, uint8_t y, uint8_t mode)
     }
 }
 
-static uint8_t Final_WaitForModeClear(uint8_t x, uint8_t y, uint8_t mode)
+static uint8_t Final_ReturnObstaclePersists(uint8_t x,
+                                             uint8_t y,
+                                             uint8_t mode)
 {
-    uint32_t waited = 0U;
     uint8_t front;
     uint8_t back;
     uint8_t left;
     uint8_t right;
+    uint8_t blocked;
 
-    for (;;)
+    if (Final_ModeTargetKnownBlocked(x, y, mode))
     {
-        Final_ReadIRSides(x, y, &front, &back, &left, &right);
-        if (!Final_IrBlocksMode(mode, front, back, left, right)) return 1U;
+#if NODE_DEBUG
+        printf("Final: RETURN KNOWN OBSTACLE (%u,%u) mode=%s, no wait\r\n",
+               (unsigned int)x, (unsigned int)y,
+               Node_ModeName(mode));
+#endif
+        return 1U;
+    }
+
+    delay_ms(FINAL_RETURN_RECHECK_MS);
+    Final_ReadIRSides(x, y, &front, &back, &left, &right);
+    blocked = Final_IrBlocksMode(mode, front, back, left, right);
 
 #if NODE_DEBUG
-        printf("Final: WAIT FOR NODE CLEAR mode=%u waited=%lu ms\r\n",
-               (unsigned int)mode, (unsigned long)waited);
+    printf("Final: RETURN RECHECK (%u,%u) mode=%s blocked=%u\r\n",
+           (unsigned int)x, (unsigned int)y,
+           Node_ModeName(mode), (unsigned int)blocked);
 #endif
 
-        if (waited >= FINAL_RETURN_WAIT_MAX_MS) return 0U;
-        delay_ms(FINAL_RETURN_POLL_MS);
-        waited += FINAL_RETURN_POLL_MS;
-    }
+    return blocked;
 }
 
 static uint8_t Final_BfsNext(uint8_t sx, uint8_t sy,
@@ -1281,51 +1443,31 @@ static void Node_Lamp(uint8_t state, uint16_t tick)
  *  七、主程序
  * ------------------------------------------------------------------------- */
 
-static int8_t Final_FindRouteIndex(const uint8_t *route_x,
-                                   const uint8_t *route_y,
-                                   uint8_t route_len,
-                                   uint8_t x,
-                                   uint8_t y)
-{
-    uint8_t i;
-
-    for (i = 0; i < route_len; i++)
-    {
-        if ((route_x[i] == x) && (route_y[i] == y))
-            return (int8_t)i;
-    }
-    return -1;
-}
-
 static uint16_t Final_ServoClamp(uint16_t pulse)
 {
-    if (pulse < FINAL_SERVO_SAFE_MIN_US) return FINAL_SERVO_SAFE_MIN_US;
-    if (pulse > FINAL_SERVO_SAFE_MAX_US) return FINAL_SERVO_SAFE_MAX_US;
+    if (pulse < FINAL_SERVO_DELIVER_PE5_US) return FINAL_SERVO_DELIVER_PE5_US;
+    if (pulse > FINAL_SERVO_HOLD_PE5_US) return FINAL_SERVO_HOLD_PE5_US;
     return pulse;
 }
 
-static void Final_ServoSetPulses(uint16_t pe5_us, uint16_t pe6_us)
+static void Final_ServoSetPulse(uint16_t pe5_us)
 {
     TIM_SetCompare1(TIM9, Final_ServoClamp(pe5_us));
-    TIM_SetCompare2(TIM9, Final_ServoClamp(pe6_us));
 }
 
 static void Final_ServoApplyState(uint8_t state)
 {
     if (state == FINAL_SERVO_STATE_DELIVER)
     {
-        Final_ServoSetPulses(FINAL_SERVO_DELIVER_PE5_US,
-                             FINAL_SERVO_DELIVER_PE6_US);
+        Final_ServoSetPulse(FINAL_SERVO_DELIVER_PE5_US);
     }
     else if (state == FINAL_SERVO_STATE_MID)
     {
-        Final_ServoSetPulses(FINAL_SERVO_MID_PE5_US,
-                             FINAL_SERVO_MID_PE6_US);
+        Final_ServoSetPulse(FINAL_SERVO_MID_US);
     }
     else
     {
-        Final_ServoSetPulses(FINAL_SERVO_HOLD_PE5_US,
-                             FINAL_SERVO_HOLD_PE6_US);
+        Final_ServoSetPulse(FINAL_SERVO_HOLD_PE5_US);
     }
 }
 
@@ -1345,25 +1487,6 @@ static void Final_ServoRunState(uint8_t state)
     delay_ms(FINAL_SERVO_STEP_MS);
 }
 
-static void Final_ServoRelease(void)
-{
-    GPIO_InitTypeDef gpio;
-
-    TIM_SetCompare1(TIM9, 0U);
-    TIM_SetCompare2(TIM9, 0U);
-    TIM_Cmd(TIM9, DISABLE);
-
-    GPIO_StructInit(&gpio);
-    gpio.GPIO_Mode = GPIO_Mode_IN;
-    gpio.GPIO_Pin  = GPIO_Pin_5 | GPIO_Pin_6;
-    gpio.GPIO_PuPd = GPIO_PuPd_NOPULL;
-    GPIO_Init(GPIOE, &gpio);
-
-#if NODE_DEBUG
-    printf("Final: SERVO RELEASE FOR RETURN\r\n");
-#endif
-}
-
 static void Final_ServoInit(void)
 {
     GPIO_InitTypeDef gpio;
@@ -1374,10 +1497,9 @@ static void Final_ServoInit(void)
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_TIM9, ENABLE);
 
     GPIO_PinAFConfig(GPIOE, GPIO_PinSource5, GPIO_AF_TIM9);
-    GPIO_PinAFConfig(GPIOE, GPIO_PinSource6, GPIO_AF_TIM9);
     GPIO_StructInit(&gpio);
     gpio.GPIO_Mode  = GPIO_Mode_AF;
-    gpio.GPIO_Pin   = GPIO_Pin_5 | GPIO_Pin_6;
+    gpio.GPIO_Pin   = GPIO_Pin_5;
     gpio.GPIO_Speed = GPIO_Speed_100MHz;
     GPIO_Init(GPIOE, &gpio);
 
@@ -1391,12 +1513,10 @@ static void Final_ServoInit(void)
     TIM_OCStructInit(&oc);
     oc.TIM_OCMode      = TIM_OCMode_PWM1;
     oc.TIM_OutputState = TIM_OutputState_Enable;
-    oc.TIM_Pulse       = FINAL_SERVO_MID_PE5_US;
+    oc.TIM_Pulse       = FINAL_SERVO_MID_US;
     oc.TIM_OCPolarity  = TIM_OCPolarity_High;
     TIM_OC1Init(TIM9, &oc);
     TIM_OC1PreloadConfig(TIM9, TIM_OCPreload_Enable);
-    TIM_OC2Init(TIM9, &oc);
-    TIM_OC2PreloadConfig(TIM9, TIM_OCPreload_Enable);
     TIM_ARRPreloadConfig(TIM9, ENABLE);
     TIM_Cmd(TIM9, ENABLE);
 
@@ -1408,11 +1528,10 @@ static uint8_t Final_DeliveryTask(void)
     LED_RED   = NODE_LED_ON;
     LED_GREEN = NODE_LED_OFF;
 
-    Final_ServoInit();
+    Final_ServoApplyState(FINAL_SERVO_STATE_HOLD);
 #if NODE_DEBUG
-    printf("Final: SERVO INIT AT GOAL, HOLD PE5=%u PE6=%u\r\n",
-           (unsigned int)FINAL_SERVO_HOLD_PE5_US,
-           (unsigned int)FINAL_SERVO_HOLD_PE6_US);
+    printf("Final: SERVO DELIVERY START, HOLD PE5=%u\r\n",
+           (unsigned int)FINAL_SERVO_HOLD_PE5_US);
 #endif
 
     Final_ServoRunState(FINAL_SERVO_STATE_HOLD);
@@ -1420,7 +1539,6 @@ static uint8_t Final_DeliveryTask(void)
     Final_ServoRunState(FINAL_SERVO_STATE_DELIVER);
     Final_ServoRunState(FINAL_SERVO_STATE_MID);
     Final_ServoRunState(FINAL_SERVO_STATE_HOLD);
-    Final_ServoRelease();
 
     LED_RED   = NODE_LED_OFF;
     LED_GREEN = NODE_LED_ON;
@@ -1637,9 +1755,9 @@ int main(void)
     uint8_t outbound_steps = 0U;
     uint8_t route_len = 1U;
     uint8_t return_len = 1U;
-    uint8_t route_index;
     uint8_t return_steps = 0U;
     uint8_t success = 0U;
+    uint8_t travel_result;
     uint8_t front;
     uint8_t back;
     uint8_t left;
@@ -1666,12 +1784,13 @@ int main(void)
 
     MOTOR_Init();
     Node_Stop();
+    Final_ServoInit();
     delay_ms(100);
 
-    F_GW_digital_Init();
-    B_GW_digital_Init();
-    L_GW_digital_Init();
-    R_GW_digital_Init();
+    f_sw_i2c_init();
+    b_sw_i2c_init();
+    l_sw_i2c_init();
+    r_sw_i2c_init();
 #if !FINAL_FORWARD_ONLY_TEST
     Node_IRSensorInit();
 #endif
@@ -1701,12 +1820,12 @@ int main(void)
     return_y[0] = current_y;
 
 #if NODE_DEBUG
-    printf("\r\n== FinalProgramGW: %s team ==\r\n", FINAL_TEAM_NAME);
+    printf("\r\n== B车 FinalProgram_B: %s team ==\r\n", FINAL_TEAM_NAME);
     printf("Final: start=(%u,%u) goal=(%u,%u), outbound + delivery + return\r\n",
            (unsigned int)FINAL_START_X, (unsigned int)FINAL_START_Y,
            (unsigned int)FINAL_GOAL_X, (unsigned int)FINAL_GOAL_Y);
-    printf("Final: return wait=%lums, prefer recorded route\r\n",
-           (unsigned long)FINAL_RETURN_WAIT_MAX_MS);
+    printf("Final: return recheck=%lums, dynamic BFS\r\n",
+           (unsigned long)FINAL_RETURN_RECHECK_MS);
 #endif
 
     delay_ms(NODE_START_DELAY_MS);
@@ -1733,10 +1852,25 @@ int main(void)
                            &next_x, &next_y))
         {
 #if NODE_DEBUG
-            printf("Final: NO OUTBOUND PATH FROM (%u,%u)\r\n",
+            printf("Final: NO OUTBOUND PATH FROM (%u,%u), try one-step retreat\r\n",
                    (unsigned int)current_x, (unsigned int)current_y);
 #endif
-            break;
+            if (Final_StepBackHistory(route_x, route_y, &route_len,
+                                      &current_x, &current_y))
+            {
+                delay_ms(NODE_INERTIA_SETTLE_MS);
+                continue;
+            }
+
+            Final_ClearBlockedMap();
+            current_x = FINAL_START_X;
+            current_y = FINAL_START_Y;
+            route_x[0] = current_x;
+            route_y[0] = current_y;
+            route_len = 1U;
+            outbound_steps = 0U;
+            delay_ms(NODE_INERTIA_SETTLE_MS);
+            continue;
         }
 
         mode = Final_ModeForStep(current_x, current_y, next_x, next_y);
@@ -1750,10 +1884,40 @@ int main(void)
                Node_ModeName(mode));
 #endif
 
-        if (Node_Travel(mode) == 0U)
+        travel_result = Node_TravelWithFailureLimit(mode,
+                                                     current_x, current_y);
+        if (travel_result == 2U)
         {
+            delay_ms(FINAL_RETURN_RECHECK_MS);
+            Final_ReadIRSides(current_x, current_y,
+                              &front, &back, &left, &right);
+
+#if NODE_DEBUG
+            printf("Final: OUTBOUND RECHECK (%u,%u) mode=%s blocked=%u\r\n",
+                   (unsigned int)current_x, (unsigned int)current_y,
+                   Node_ModeName(mode),
+                   (unsigned int)Final_IrBlocksMode(mode, front, back,
+                                                    left, right));
+#endif
+
+            if (Final_IrBlocksMode(mode, front, back, left, right))
+                Final_MarkBlockedForMode(current_x, current_y, mode);
+
             Node_Stop();
-            break;
+            delay_ms(NODE_INERTIA_SETTLE_MS);
+            continue;
+        }
+        if (travel_result == 0U)
+        {
+#if NODE_DEBUG
+            printf("Final: OUTBOUND TRAVEL FAILED %u TIMES, block (%u,%u)\r\n",
+                   (unsigned int)FINAL_TRAVEL_FAILURE_LIMIT,
+                   (unsigned int)next_x, (unsigned int)next_y);
+#endif
+            Final_MarkBlockedForMode(current_x, current_y, mode);
+            Node_Stop();
+            delay_ms(NODE_INERTIA_SETTLE_MS);
+            continue;
         }
 
         Node_Stop();
@@ -1795,8 +1959,6 @@ int main(void)
             while ((current_x != FINAL_START_X)
                 || (current_y != FINAL_START_Y))
             {
-                uint8_t selected = 0U;
-
                 if (return_steps >= FINAL_MAX_STEPS)
                 {
 #if NODE_DEBUG
@@ -1808,62 +1970,51 @@ int main(void)
                 Final_ReadIRSides(current_x, current_y,
                                   &front, &back, &left, &right);
 
-                route_index = (uint8_t)Final_FindRouteIndex(
-                    route_x, route_y, route_len, current_x, current_y);
-
-                if ((route_index > 0U) && (route_index < route_len))
+                /* Previously known obstacles skip the 2000 ms wait. */
+                if (Final_IrHasUnknownObstacle(current_x, current_y,
+                                               front, back, left, right))
                 {
-                    next_x = route_x[route_index - 1U];
-                    next_y = route_y[route_index - 1U];
-                    mode = Final_ModeForStep(current_x, current_y,
-                                             next_x, next_y);
-
-                    if ((mode != 0xFFU)
-                        && !Final_IrBlocksMode(mode, front, back, left, right))
-                    {
-                        selected = 1U;
-                    }
-                    else if ((mode != 0xFFU)
-                             && Final_WaitForModeClear(current_x,
-                                                       current_y, mode))
-                    {
-                        selected = 1U;
-                    }
-                    else if (mode != 0xFFU)
-                    {
-                        Final_MarkBlockedForMode(current_x, current_y, mode);
-                    }
-                }
-
-                if (!selected)
-                {
-                    if (!Final_BfsNext(current_x, current_y,
-                                       FINAL_START_X, FINAL_START_Y,
-                                       &next_x, &next_y))
-                    {
 #if NODE_DEBUG
-                        printf("Final: NO RETURN PATH FROM (%u,%u)\r\n",
-                               (unsigned int)current_x,
-                               (unsigned int)current_y);
+                    printf("Final: RETURN NODE OBSTACLE at (%u,%u), wait=2000ms\r\n",
+                           (unsigned int)current_x, (unsigned int)current_y);
 #endif
-                        break;
-                    }
-
-                    mode = Final_ModeForStep(current_x, current_y,
-                                             next_x, next_y);
-                    if (mode == 0xFFU) break;
-
-                    if (Final_IrBlocksMode(mode, front, back, left, right))
-                    {
-                        if (!Final_WaitForModeClear(current_x,
-                                                   current_y, mode))
-                        {
-                            Final_MarkBlockedForMode(current_x,
-                                                     current_y, mode);
-                            continue;
-                        }
-                    }
+                    delay_ms(FINAL_RETURN_RECHECK_MS);
+                    Final_ReadIRSides(current_x, current_y,
+                                      &front, &back, &left, &right);
+                    Final_UpdateBlockedMap(current_x, current_y,
+                                           front, back, left, right);
                 }
+
+                if (!Final_BfsNext(current_x, current_y,
+                                   FINAL_START_X, FINAL_START_Y,
+                                   &next_x, &next_y))
+                {
+#if NODE_DEBUG
+                    printf("Final: NO RETURN PATH FROM (%u,%u), try one-step retreat\r\n",
+                           (unsigned int)current_x,
+                           (unsigned int)current_y);
+#endif
+                    if (Final_StepBackHistory(return_x, return_y, &return_len,
+                                              &current_x, &current_y))
+                    {
+                        delay_ms(NODE_INERTIA_SETTLE_MS);
+                        continue;
+                    }
+
+                    Final_ClearBlockedMap();
+                    current_x = FINAL_GOAL_X;
+                    current_y = FINAL_GOAL_Y;
+                    return_x[0] = current_x;
+                    return_y[0] = current_y;
+                    return_len = 1U;
+                    return_steps = 0U;
+                    delay_ms(NODE_INERTIA_SETTLE_MS);
+                    continue;
+                }
+
+                mode = Final_ModeForStep(current_x, current_y,
+                                         next_x, next_y);
+                if (mode == 0xFFU) break;
 
 #if NODE_DEBUG
                 printf("Final: RET %u (%u,%u) -> (%u,%u) %s\r\n",
@@ -1873,10 +2024,31 @@ int main(void)
                        Node_ModeName(mode));
 #endif
 
-                if (Node_Travel(mode) == 0U)
+                travel_result = Node_TravelWithFailureLimit(mode,
+                                                             current_x,
+                                                             current_y);
+                if (travel_result == 2U)
                 {
+                    if (Final_ReturnObstaclePersists(current_x,
+                                                     current_y, mode))
+                    {
+                        Final_MarkBlockedForMode(current_x, current_y, mode);
+                    }
                     Node_Stop();
-                    break;
+                    delay_ms(NODE_INERTIA_SETTLE_MS);
+                    continue;
+                }
+                if (travel_result == 0U)
+                {
+#if NODE_DEBUG
+                    printf("Final: RETURN TRAVEL FAILED %u TIMES, block (%u,%u)\r\n",
+                           (unsigned int)FINAL_TRAVEL_FAILURE_LIMIT,
+                           (unsigned int)next_x, (unsigned int)next_y);
+#endif
+                    Final_MarkBlockedForMode(current_x, current_y, mode);
+                    Node_Stop();
+                    delay_ms(NODE_INERTIA_SETTLE_MS);
+                    continue;
                 }
 
                 Node_Stop();

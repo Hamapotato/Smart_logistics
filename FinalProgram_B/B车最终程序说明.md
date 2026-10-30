@@ -1,8 +1,8 @@
-# FinalProgram v2 —— 去程记录、投递与返程动态避障
+# B车程序 FinalProgram_B —— 去程记录、投递与返程动态避障
 
-> 更新日期：2026-10-28  
-> 工程：`FinalProgram\FinalProgram.uvprojx`  
-> 主程序：`FinalProgram\final_main.c`  
+> 更新日期：2026-10-31  
+> 工程：`FinalProgram_B\FinalProgram_B.uvprojx`  
+> 主程序：`FinalProgram_B\final_b_main.c`  
 > 当前状态：运行时红蓝方选择已加入，尚未实车验证
 
 ## 0. 当前完整流程模式
@@ -23,7 +23,7 @@
 - 初始化八路红外；
 - 执行 BFS 路径规划；
 - 执行四方向移动、平移/旋转纠偏和节点停车；
-- 终点执行双舵机投递；
+- 终点执行单舵机投递；
 - 返程执行动态避障与 BFS 重规划。
 
 当前 `FINAL_FORWARD_TRANSLATION_ENABLE = 1`、
@@ -77,7 +77,7 @@ Fwd: F=xx B=xx ok=x/x yaw=... lat=... vy=... w=...
 1. IRTest 的八路红外障碍检测；
 2. NodeTest 的四方向节点间移动、灰度循迹和节点停车；
 3. 8×5 节点地图上的 BFS 路径规划；
-4. 去程实际路线记录、终点才开始的双舵机投递和返程路径恢复。
+4. 去程实际路线记录、终点才开始的单舵机投递和返程路径恢复。
 
 场地和坐标定义见：
 
@@ -141,7 +141,7 @@ Y = 0..4，共 5 行
   |
 到达终点
   |
-双舵机投递：持有 -> 中间 -> 投递 -> 中间 -> 持有
+单舵机投递：持有 -> 中间 -> 投递 -> 中间 -> 持有
   |
 返程：优先按去程路线逆序返回
   |
@@ -159,16 +159,16 @@ Y = 0..4，共 5 行
 去程每到一个节点都会重新规划。返程优先复用记录的实际路线；只有下一
 节点持续被占用时才会更新障碍地图并重新 BFS。
 
-两个面对面安装的舵机由 PE5/TIM9_CH1 和 PE6/TIM9_CH2 控制。
+B 车只安装一个 `60 kg·cm、270°` 舵机，由 `PE5 / TIM9_CH1` 控制。
 
-去程和返程都不初始化、不驱动舵机，PE5/PE6 不输出 PWM；只有到达终点后
-才初始化 TIM9 并从持有状态开始投递。
+上电初始化电机后立即初始化 TIM9，PE5 从一开始就持续输出 HOLD PWM。
+等待 TCRT 启动、去程、投递和返程期间都保持舵机供电，不关闭 TIM9。
 
-| 状态 | PE5 / TIM9_CH1 | PE6 / TIM9_CH2 |
-|---|---:|---:|
-| 投递/释放 | `800 us` | `1700 us` |
-| 中间 | `1250 us` | `1250 us` |
-| 物品持有 | `1700 us` | `800 us` |
+| 状态 | PE5 / TIM9_CH1 |
+|---|---:|
+| 投递/释放 | `500 us` |
+| 中间 | `800 us` |
+| 物品持有 | `1300 us` |
 
 到达终点、调用 `Final_DeliveryTask()` 后执行：
 
@@ -176,8 +176,8 @@ Y = 0..4，共 5 行
 HOLD -> MID -> DELIVER -> MID -> HOLD -> RELEASE
 ```
 
-每个状态停留 `1500 ms`。最后的 HOLD 完成后关闭 TIM9，把 PE5/PE6 改为
-无上拉输入，释放舵机，然后开始返程；返程期间不再输出 PWM。
+每个状态停留 `1500 ms`。最后的 HOLD 完成后继续保持 `1300 us` PWM，
+不关闭 TIM9、不释放舵机，然后直接开始返程。
 
 ## 4. 四方向与坐标变化
 
@@ -191,7 +191,7 @@ HOLD -> MID -> DELIVER -> MID -> HOLD -> RELEASE
 路径层不执行 90° 转弯。NodeTest 的旋转量 `w` 只用于小幅姿态纠偏，
 使车头继续接近 `+Y`。
 
-FinalProgram 实车标定后的旋转符号：
+B车程序 FinalProgram_B 实车标定后的旋转符号：
 
 ```c
 #define NODE_TRACK_YAW_SIGN   (+1)  /* 前进，不做反向 */
@@ -231,22 +231,62 @@ static uint8_t Final_Preferred[8][5];
 由于每个相邻节点间移动代价都为 1，使用 BFS 可以得到最短节点路径。
 当前 40 个节点的搜索量很小，不需要 D* Lite 或 RRT。
 
+起点不设为 BFS 禁行点。只要障碍地图没有明确把起点标成障碍，路径就可以
+经过起点，不会为了绕开起点而额外增加路径。
+
 去程按 BFS 选择最短路径，并把每次实际到达的坐标记录到 `route_x/y[]`。
 到达终点后，所有去程节点写入 `Final_Preferred[][]`。
 
+### 节点间移动连续失败
+
+去程和返程都使用同一规则：
+
+```c
+#define FINAL_TRAVEL_FAILURE_LIMIT 2U
+```
+
+1. 第一次普通移动失败：停车并等待惯性稳定，然后从同一个逻辑节点重试；
+2. 第二次仍然失败：把本次目标节点写入 `Final_Blocked[][]`，视为障碍；
+3. 返回寻路循环，用更新后的障碍地图重新执行 BFS；
+4. 中途红外发现障碍并返回原节点仍按原有 `2000 ms` 延迟复检流程处理，
+   不重复计算普通移动失败次数。
+
+串口会显示 `TRAVEL FAILED ... attempt=1/2` 和第二次失败后的
+`TRAVEL FAILED 2 TIMES, block (x,y)`。
+
 返程规则：
 
-1. 当前节点在去程路线中时，优先走向路线中的前一个节点；
-2. 如果该方向有车，停车等待，每 `200 ms` 重新读取一次；
-3. 连续等待超过 `5000 ms` 仍未清空，把目标节点写成固定障碍；
-4. 从当前节点重新执行 BFS；
-5. 多条等长路径中优先选择去程经过的节点。
+1. 以去程更新后的完整障碍地图为基础，从当前节点执行 BFS；
+2. 每条等长路径中优先选择去程经过的节点；
+3. 到达节点发现新障碍时，原地等待 `2000 ms` 后重新扫描；
+4. 新障碍持续存在时写入固定障碍地图，并重新 BFS；
+5. 障碍消失则继续按 BFS 路径移动。
+
+返程检测到障碍时，先检查该方向的邻居节点是否已经在
+`Final_Blocked[][]` 中：
+
+- 如果只是第一轮去程已经记录过的障碍：不再等待 2000 ms，直接 BFS 绕行；
+- 如果是本轮返程新出现的障碍：才等待 2000 ms 后复检。
+
+### BFS 无解时逐节点回退
+
+去程 BFS 找不到通往终点的路径时：
+
+1. 沿实际行驶历史只退回一个节点；
+2. 在新节点重新扫描四侧红外并更新障碍地图；
+3. 再次执行 BFS；
+4. 仍然无解则继续退一个节点；
+5. 一直退到起点仍无解，才清空全部已知障碍并重新出发。
+
+返程 BFS 找不到回家的路径时使用同样规则，沿返程历史每次退回一个节点，
+直到退回终点。到达终点时仍无解，才清空障碍地图并重新开始返程；
+不会再次执行投递动作。
 
 主参数：
 
 ```c
-#define FINAL_RETURN_WAIT_MAX_MS 5000U
-#define FINAL_RETURN_POLL_MS     200U
+#define FINAL_RETURN_RECHECK_MS 2000U
+#define FINAL_TRAVEL_FAILURE_LIMIT 2U
 ```
 
 返程时如果 BFS 也找不到回家路径，程序停车并进入错误状态。
@@ -284,9 +324,31 @@ E18-D80NK 返回的是数字触发信号，不是模拟距离。检测距离/灵
 | 左 | `(X-1, Y)` |
 | 右 | `(X+1, Y)` |
 
-去程扫描到障碍后直接更新固定障碍地图。返程扫描时，不立即把其他车辆
-当成固定障碍，而是先等待其离开；只有等待超时后才把对应节点坐标写入
+去程扫描到障碍后直接更新固定障碍地图。返程扫描时，先原地等待
+`2000 ms` 再扫描一次；只有障碍仍存在时，才把对应节点坐标写入
 `Final_Blocked[][]`。
+
+### 节点驶出后的 200 ms 连续检测
+
+每段行程从节点驶出后，按当前移动方向每隔 `200 ms` 检测一次，
+连续执行 5 次，总检测窗口为 `1000 ms`：
+
+```c
+#define NODE_MID_IR_CHECK_INTERVAL_MS 200U
+#define NODE_MID_IR_CHECK_COUNT       5U
+```
+
+去程检测到障碍后，反向速度 `-4` 制动并返回原节点，等待 `2000 ms`
+后沿原移动方向重新读取红外：
+
+- 障碍仍然存在：把目标节点记为障碍，然后重新 BFS；
+- 障碍已经消失：不写入障碍地图，重新按当前 BFS 路径出发，并再次执行
+  五次 `200 ms` 中途检查。
+
+返程检测到障碍后，先返回原节点，等待 `2000 ms` 后复检：
+
+- 障碍消失：重新出发，并再次执行五次 `200 ms` 中途检查；
+- 障碍仍存在：记录为目标障碍并重新 BFS。
 
 `PB7` 在 IRTest 的历史测试中无响应，但后侧仍可由 `PE4` 触发。正式比赛
 前仍应重新检查该路，避免单探头覆盖不足。
@@ -296,12 +358,13 @@ E18-D80NK 返回的是数字触发信号，不是模拟距离。检测距离/灵
 本程序直接继承 NodeTest 的控制参数和轮速顺序：
 
 ```c
-#define NODE_CRUISE            10
+#define NODE_CRUISE            17
 #define NODE_TICK_MS           20
 #define NODE_TRACK_LAT_K       8
-#define NODE_TRACK_LAT_MAX     2
+#define NODE_TRACK_LAT_MAX     3
+#define NODE_TRACK_LONG_MAX    3
 #define NODE_TRACK_YAW_K       8
-#define NODE_TRACK_YAW_MAX     1
+#define NODE_TRACK_YAW_MAX     2
 #define NODE_TRACK_DEADBAND    2
 ```
 
@@ -317,7 +380,7 @@ E18-D80NK 返回的是数字触发信号，不是模拟距离。检测距离/灵
 节点停车：
 
 ```c
-#define NODE_BRAKE_SPEED 1
+#define NODE_BRAKE_SPEED 4
 #define NODE_BRAKE_MS    400
 ```
 
@@ -334,7 +397,7 @@ E18-D80NK 返回的是数字触发信号，不是模拟距离。检测距离/灵
 #define NODE_STOP_MASK_67 0x60U
 ```
 
-触发后按当前运动方向给四轮完整反向 `1` 速，持续 `400 ms`，随后停车。
+触发后按当前运动方向给四轮完整反向 `4` 速，持续 `400 ms`，随后停车。
 
 ## 8. 串口输出
 
@@ -343,7 +406,7 @@ USART1，`PA9`，`19200 8N1`。
 启动示例：
 
 ```text
-== FinalProgram v2: RED team ==
+== B车 FinalProgram_B: RED team ==
 Final: start=(7,0) goal=(0,4), outbound + delivery + return
 Final: return wait=5000ms, prefer recorded route
 ```
@@ -392,7 +455,7 @@ Final: FIXED OBSTACLE (x,y), from node (cx,cy)
 | 状态 | LED |
 |---|---|
 | 去程、返程运行中 | 绿灯常亮 |
-| 终点双舵机投递动作 | 红灯常亮 |
+| 终点单舵机投递动作 | 红灯常亮 |
 | 返回起点并完成任务 | 红灯常亮 |
 | 无路径、行驶超时或电机 I2C 失败 | 红灯闪烁 |
 
@@ -401,21 +464,21 @@ Final: FIXED OBSTACLE (x,y), from node (cx,cy)
 工程：
 
 ```text
-FinalProgram\FinalProgram.uvprojx
+FinalProgram_B\FinalProgram_B.uvprojx
 ```
 
 命令行编译：
 
 ```powershell
 $uv4 = 'D:\WORK\embedded development\Keil_AC5\UV4\UV4.exe'
-Set-Location 'D:\WORK\2026江苏省机器人大赛\2024年江苏省机器人大赛-智慧快递\程序代码\智慧快递\FinalProgram'
-Start-Process -FilePath $uv4 -ArgumentList @('-r','FinalProgram.uvprojx','-o','build-check.log','-j0') -Wait
+Set-Location 'D:\WORK\2026江苏省机器人大赛\2024年江苏省机器人大赛-智慧快递\程序代码\智慧快递\FinalProgram_B'
+Start-Process -FilePath $uv4 -ArgumentList @('-r','FinalProgram_B.uvprojx','-o','build-check.log','-j0') -Wait
 ```
 
 固件：
 
 ```text
-FinalProgram\Obj\FinalProgram.hex
+FinalProgram_B\Obj\FinalProgram_B.hex
 ```
 
 编译结果：
@@ -424,7 +487,7 @@ FinalProgram\Obj\FinalProgram.hex
 当前 `FINAL_FORWARD_ONLY_TEST = 0`：
 
 ```text
-0 Error(s), Code=14402, RO=542, RW=128, ZI=1104
+0 Error(s), Code=15626, RO=610, RW=128, ZI=1104
 ```
 ```
 
@@ -452,18 +515,18 @@ Keil 的 Download 后如果车辆不运行，先按板载复位键。此前 ST-L
 - 红外检测距离必须覆盖一个网格间距；
 - 当前假设障碍只在节点，不在边中；
 - 当前没有多机器人通信；返程依赖停车等待和红外避让；
-- 当前只在节点扫描障碍，不在移动途中重新规划；
+- 当前在节点扫描，并在驶出后执行五次 `200 ms` 中途扫描；其余时间不做连续动态扫描；
 - 如果终点节点被红外判为障碍，BFS 会报告无路径；
 - 当前设备使用 NodeTest 的无编码器开环速度控制；
-- 当前使用 Keil 编译宏切换红方/蓝方，不支持上电自动识别队伍；
-- 当前已整合 PE5/PE6 双舵机投递动作，但尚未实车验证机械行程和舵盘姿态。
+- 启动前通过 `PD10` 在红方和蓝方之间运行时切换；
+- 当前已整合 PE5 单舵机投递动作，但尚未实车验证机械行程和舵盘姿态。
 
 ## 13. 主要文件
 
 | 文件 | 作用 |
 |---|---|
-| `final_main.c` | BFS、红外、NodeTest 控制整合 |
-| `FinalProgram.uvprojx` | Keil 工程 |
-| `FinalProgram.uvoptx` | ST-Link / 调试配置 |
-| `Obj\FinalProgram.hex` | 可烧录固件 |
+| `final_b_main.c` | B 车 BFS、红外、NodeTest 单舵机控制整合 |
+| `FinalProgram_B.uvprojx` | Keil 工程 |
+| `FinalProgram_B.uvoptx` | ST-Link / 调试配置 |
+| `Obj\FinalProgram_B.hex` | 可烧录固件 |
 | `..\场地网格与四角巡线理解.md` | 场地坐标和任务模型 |

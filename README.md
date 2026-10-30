@@ -2,9 +2,10 @@
 
 STM32F407ZGT6 智慧快递机器人 Keil 工程、测试程序和比赛最终控制程序。
 
-## 当前最终程序
+## A 车程序
 
-[FinalProgram](FinalProgram/FinalProgram.uvprojx) 是当前整合版比赛程序，包含：
+[FinalProgram_A](FinalProgram_A/FinalProgram_A.uvprojx) 是 A 车整合版比赛程序，
+使用亚博 `YB-MUX04` 灰度模块，包含：
 
 - 8×5 节点矩形网格上的 BFS 路径规划；
 - `PD12` 上的 TCRT5000 唯一启动控制，不使用语音启动；
@@ -19,12 +20,15 @@ STM32F407ZGT6 智慧快递机器人 Keil 工程、测试程序和比赛最终控
 > `FINAL_FORWARD_TRANSLATION_ENABLE = 1`、`FINAL_FORWARD_YAW_ENABLE = 1`，
 > 运行完整流程，包括 BFS、红外、四方向移动、停车、双舵机投递和返程。
 
-说明：[FinalProgram/最终程序说明.md](FinalProgram/最终程序说明.md)
+说明：[FinalProgram_A/A车最终程序说明.md](FinalProgram_A/A车最终程序说明.md)
 
-感为 GW 灰度版本：
+## B 车程序
 
-[FinalProgramGW](FinalProgramGW/FinalProgramGW.uvprojx)  
-说明：[FinalProgramGW/感为版最终程序说明.md](FinalProgramGW/感为版最终程序说明.md)
+[FinalProgram_B](FinalProgram_B/FinalProgram_B.uvprojx) 是 B 车整合版比赛程序。
+硬件和使用亚博 `YB-MUX04` 六路灰度，控制逻辑、权重、速度、启动、
+节点停车、BFS、红外避障、舵机投递和返程均与 A 车程序一致。
+
+说明：[FinalProgram_B/B车最终程序说明.md](FinalProgram_B/B车最终程序说明.md)
 
 上电默认红方。在 `TCRT5000` 启动前按 `PD10` 按钮可在红方和蓝方之间切换：
 
