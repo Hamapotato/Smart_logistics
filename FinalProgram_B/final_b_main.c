@@ -121,7 +121,10 @@
 #define FINAL_GRID_NODES             (FINAL_GRID_W * FINAL_GRID_H)
 #define FINAL_MAX_STEPS              64U
 #define FINAL_ROUTE_CAPACITY         (FINAL_MAX_STEPS + 1U)
-#define FINAL_RETURN_RECHECK_MS      2000U
+#define FINAL_OBSTACLE_WAIT_MIN_MS   2000U
+#define FINAL_OBSTACLE_WAIT_LEVELS   3U
+#define FINAL_OBSTACLE_RANDOM_SALT   0x5A3CA5C3UL
+#define FINAL_OBSTACLE_RANDOM_PHASE  1U
 #define FINAL_TRAVEL_FAILURE_LIMIT   2U
 #define FINAL_SERVO_DELIVER_PE5_US   500U
 #define FINAL_SERVO_MID_US           800U
@@ -978,6 +981,37 @@ static uint8_t Node_IsAtTravelNode(uint8_t mode)
          && s.back_ok && Node_StopPairHit(s.back_bits)));
 }
 
+static uint32_t Final_ObstacleRandomNext(void)
+{
+    static uint32_t state = 0U;
+
+    if (state == 0U)
+    {
+        state = ((uint32_t)SysTick->VAL) ^ FINAL_OBSTACLE_RANDOM_SALT;
+        if (state == 0U) state = FINAL_OBSTACLE_RANDOM_SALT;
+    }
+
+    state = (state * 1664525UL) + 1013904223UL;
+    state ^= (uint32_t)SysTick->VAL;
+    if (state == 0U) state = FINAL_OBSTACLE_RANDOM_SALT;
+    return state;
+}
+
+static uint16_t Final_ObstacleWaitMs(void)
+{
+    uint32_t r;
+    uint8_t choice;
+
+    r = Final_ObstacleRandomNext();
+    choice = (uint8_t)(
+        (((r >> 16) % FINAL_OBSTACLE_WAIT_LEVELS)
+         + FINAL_OBSTACLE_RANDOM_PHASE)
+        % FINAL_OBSTACLE_WAIT_LEVELS);
+
+    return (uint16_t)(
+        FINAL_OBSTACLE_WAIT_MIN_MS * ((uint16_t)choice + 1U));
+}
+
 /*
  * One attempt is a complete move from start_x/start_y toward the target.
  * Both a generic travel failure and a mid-route obstacle detection followed
@@ -993,6 +1027,7 @@ static uint8_t Node_TravelWithFailureLimit(uint8_t mode,
     uint8_t result;
     uint8_t reverse_mode;
     uint8_t obstacle_failure;
+    uint16_t obstacle_wait_ms;
 
     for (attempt = 1U; attempt <= FINAL_TRAVEL_FAILURE_LIMIT; attempt++)
     {
@@ -1036,9 +1071,19 @@ static uint8_t Node_TravelWithFailureLimit(uint8_t mode,
         if (attempt < FINAL_TRAVEL_FAILURE_LIMIT)
         {
             Node_Stop();
-            delay_ms(obstacle_failure
-                     ? FINAL_RETURN_RECHECK_MS
-                     : NODE_INERTIA_SETTLE_MS);
+            if (obstacle_failure)
+            {
+                obstacle_wait_ms = Final_ObstacleWaitMs();
+#if NODE_DEBUG
+                printf("Final: OBSTACLE WAIT %ums before retry\r\n",
+                       (unsigned int)obstacle_wait_ms);
+#endif
+                delay_ms(obstacle_wait_ms);
+            }
+            else
+            {
+                delay_ms(NODE_INERTIA_SETTLE_MS);
+            }
         }
     }
 
@@ -1771,6 +1816,7 @@ int main(void)
     uint8_t x;
     uint8_t y;
     uint16_t tick = 0U;
+    uint16_t obstacle_wait_ms;
     uint8_t route_x[FINAL_ROUTE_CAPACITY];
     uint8_t route_y[FINAL_ROUTE_CAPACITY];
     uint8_t return_x[FINAL_ROUTE_CAPACITY];
@@ -1830,8 +1876,7 @@ int main(void)
     printf("Final: start=(%u,%u) goal=(%u,%u), outbound + delivery + return\r\n",
            (unsigned int)FINAL_START_X, (unsigned int)FINAL_START_Y,
            (unsigned int)FINAL_GOAL_X, (unsigned int)FINAL_GOAL_Y);
-    printf("Final: return recheck=%lums, dynamic BFS\r\n",
-           (unsigned long)FINAL_RETURN_RECHECK_MS);
+    printf("Final: obstacle wait=random 2000/4000/6000ms, dynamic BFS\r\n");
 #endif
 
     delay_ms(NODE_START_DELAY_MS);
@@ -1960,15 +2005,17 @@ int main(void)
                 Final_ReadIRSides(current_x, current_y,
                                   &front, &back, &left, &right);
 
-                /* Previously known obstacles skip the 2000 ms wait. */
+                /* Previously known obstacles skip the random wait. */
                 if (Final_IrHasUnknownObstacle(current_x, current_y,
                                                front, back, left, right))
                 {
+                    obstacle_wait_ms = Final_ObstacleWaitMs();
 #if NODE_DEBUG
-                    printf("Final: RETURN NODE OBSTACLE at (%u,%u), wait=2000ms\r\n",
-                           (unsigned int)current_x, (unsigned int)current_y);
+                    printf("Final: RETURN NODE OBSTACLE at (%u,%u), wait=%ums\r\n",
+                           (unsigned int)current_x, (unsigned int)current_y,
+                           (unsigned int)obstacle_wait_ms);
 #endif
-                    delay_ms(FINAL_RETURN_RECHECK_MS);
+                    delay_ms(obstacle_wait_ms);
                     Final_ReadIRSides(current_x, current_y,
                                       &front, &back, &left, &right);
                     Final_UpdateBlockedMap(current_x, current_y,
