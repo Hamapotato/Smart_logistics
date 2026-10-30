@@ -954,11 +954,36 @@ static uint8_t Node_TravelNoMid(uint8_t mode,
                            0U, NODE_ARM_DELAY_TICKS);
 }
 
+static uint8_t Node_IsAtTravelNode(uint8_t mode)
+{
+    NodeSensors s;
+    uint8_t read_ok;
+
+    read_ok = Node_ReadSensors(&s);
+    if ((mode == NODE_MODE_FORWARD) || (mode == NODE_MODE_BACK))
+    {
+        return (uint8_t)(
+            (((read_ok & NODE_READ_LEFT) != 0U)
+             && s.left_ok && Node_StopPairHit(s.left_bits))
+            ||
+            (((read_ok & NODE_READ_RIGHT) != 0U)
+             && s.right_ok && Node_StopPairHit(s.right_bits)));
+    }
+
+    return (uint8_t)(
+        (((read_ok & NODE_READ_FRONT) != 0U)
+         && s.front_ok && Node_StopPairHit(s.front_bits))
+        ||
+        (((read_ok & NODE_READ_BACK) != 0U)
+         && s.back_ok && Node_StopPairHit(s.back_bits)));
+}
+
 /*
- * Retry the same node-to-node move after the first generic travel failure.
- * A result of 0 means the move failed FINAL_TRAVEL_FAILURE_LIMIT times.
- * Mid-route obstacle results (2) are returned immediately for the existing
- * wait-and-recheck handling.
+ * One attempt is a complete move from start_x/start_y toward the target.
+ * Both a generic travel failure and a mid-route obstacle detection followed
+ * by a return to the start node count as one unsuccessful attempt.
+ * A result of 0 means all attempts failed. A result of 3 means the position
+ * could not be recovered after a generic failure.
  */
 static uint8_t Node_TravelWithFailureLimit(uint8_t mode,
                                            uint8_t start_x,
@@ -966,24 +991,54 @@ static uint8_t Node_TravelWithFailureLimit(uint8_t mode,
 {
     uint8_t attempt;
     uint8_t result;
+    uint8_t reverse_mode;
+    uint8_t obstacle_failure;
 
     for (attempt = 1U; attempt <= FINAL_TRAVEL_FAILURE_LIMIT; attempt++)
     {
         result = Node_Travel(mode, start_x, start_y);
-        if (result != 0U) return result;
+        if (result == 1U) return 1U;
+
+        obstacle_failure = (uint8_t)(result == 2U);
+        if (result == 0U)
+        {
+            Node_Stop();
+            delay_ms(NODE_INERTIA_SETTLE_MS);
+
+            /* A generic failure can leave the car between two nodes. */
+            if (!Node_IsAtTravelNode(mode))
+            {
+                reverse_mode = Node_ReverseMode(mode);
+                if ((reverse_mode == 0xFFU)
+                    || (Node_TravelCore(reverse_mode, start_x, start_y,
+                                        0U, NODE_RETRACE_ARM_TICKS) != 1U))
+                {
+                    Node_Stop();
+                    return 3U;
+                }
+            }
+        }
+        else if (result != 2U)
+        {
+            Node_Stop();
+            return 3U;
+        }
 
 #if NODE_DEBUG
-        printf("Final: TRAVEL FAILED (%u,%u) mode=%s attempt=%u/%u\r\n",
+        printf("Final: TRAVEL ATTEMPT FAILED (%u,%u) mode=%s attempt=%u/%u cause=%s\r\n",
                (unsigned int)start_x, (unsigned int)start_y,
                Node_ModeName(mode),
                (unsigned int)attempt,
-               (unsigned int)FINAL_TRAVEL_FAILURE_LIMIT);
+               (unsigned int)FINAL_TRAVEL_FAILURE_LIMIT,
+               obstacle_failure ? "MID_OBSTACLE" : "MOVE_ERROR");
 #endif
 
         if (attempt < FINAL_TRAVEL_FAILURE_LIMIT)
         {
             Node_Stop();
-            delay_ms(NODE_INERTIA_SETTLE_MS);
+            delay_ms(obstacle_failure
+                     ? FINAL_RETURN_RECHECK_MS
+                     : NODE_INERTIA_SETTLE_MS);
         }
     }
 
@@ -1153,22 +1208,6 @@ static uint8_t Final_ModeForStep(uint8_t x, uint8_t y,
     return 0xFFU;
 }
 
-static uint8_t Final_ModeTargetKnownBlocked(uint8_t x, uint8_t y,
-                                             uint8_t mode)
-{
-    uint8_t nx = x;
-    uint8_t ny = y;
-
-    if (mode == NODE_MODE_FORWARD) ny++;
-    else if (mode == NODE_MODE_BACK) ny--;
-    else if (mode == NODE_MODE_LEFT) nx--;
-    else if (mode == NODE_MODE_RIGHT) nx++;
-    else return 0U;
-
-    if ((nx >= FINAL_GRID_W) || (ny >= FINAL_GRID_H)) return 0U;
-    return Final_Blocked[nx][ny];
-}
-
 static uint8_t Final_StepBackHistory(const uint8_t *path_x,
                                      const uint8_t *path_y,
                                      uint8_t *path_len,
@@ -1225,39 +1264,6 @@ static void Final_MarkBlockedForMode(uint8_t x, uint8_t y, uint8_t mode)
                (unsigned int)x, (unsigned int)y);
 #endif
     }
-}
-
-static uint8_t Final_ReturnObstaclePersists(uint8_t x,
-                                             uint8_t y,
-                                             uint8_t mode)
-{
-    uint8_t front;
-    uint8_t back;
-    uint8_t left;
-    uint8_t right;
-    uint8_t blocked;
-
-    if (Final_ModeTargetKnownBlocked(x, y, mode))
-    {
-#if NODE_DEBUG
-        printf("Final: RETURN KNOWN OBSTACLE (%u,%u) mode=%s, no wait\r\n",
-               (unsigned int)x, (unsigned int)y,
-               Node_ModeName(mode));
-#endif
-        return 1U;
-    }
-
-    delay_ms(FINAL_RETURN_RECHECK_MS);
-    Final_ReadIRSides(x, y, &front, &back, &left, &right);
-    blocked = Final_IrBlocksMode(mode, front, back, left, right);
-
-#if NODE_DEBUG
-    printf("Final: RETURN RECHECK (%u,%u) mode=%s blocked=%u\r\n",
-           (unsigned int)x, (unsigned int)y,
-           Node_ModeName(mode), (unsigned int)blocked);
-#endif
-
-    return blocked;
 }
 
 static uint8_t Final_BfsNext(uint8_t sx, uint8_t sy,
@@ -1886,26 +1892,10 @@ int main(void)
 
         travel_result = Node_TravelWithFailureLimit(mode,
                                                      current_x, current_y);
-        if (travel_result == 2U)
+        if (travel_result == 3U)
         {
-            delay_ms(FINAL_RETURN_RECHECK_MS);
-            Final_ReadIRSides(current_x, current_y,
-                              &front, &back, &left, &right);
-
-#if NODE_DEBUG
-            printf("Final: OUTBOUND RECHECK (%u,%u) mode=%s blocked=%u\r\n",
-                   (unsigned int)current_x, (unsigned int)current_y,
-                   Node_ModeName(mode),
-                   (unsigned int)Final_IrBlocksMode(mode, front, back,
-                                                    left, right));
-#endif
-
-            if (Final_IrBlocksMode(mode, front, back, left, right))
-                Final_MarkBlockedForMode(current_x, current_y, mode);
-
             Node_Stop();
-            delay_ms(NODE_INERTIA_SETTLE_MS);
-            continue;
+            break;
         }
         if (travel_result == 0U)
         {
@@ -2027,16 +2017,10 @@ int main(void)
                 travel_result = Node_TravelWithFailureLimit(mode,
                                                              current_x,
                                                              current_y);
-                if (travel_result == 2U)
+                if (travel_result == 3U)
                 {
-                    if (Final_ReturnObstaclePersists(current_x,
-                                                     current_y, mode))
-                    {
-                        Final_MarkBlockedForMode(current_x, current_y, mode);
-                    }
                     Node_Stop();
-                    delay_ms(NODE_INERTIA_SETTLE_MS);
-                    continue;
+                    break;
                 }
                 if (travel_result == 0U)
                 {
